@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/drzdez/teamsrec-capture/docs/recording.schema.json",
+  "title": "teamsrec recording sidecar v1",
+  "type": "object",
+  "required": [
+    "format",
+    "app",
+    "app_version",
+    "title",
+    "slug",
+    "source",
+    "start",
+    "end",
+    "duration_s",
+    "stop_reason",
+    "tracks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": 1
+    },
+    "app": {
+      "type": "string"
+    },
+    "app_version": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,60}$"
+    },
+    "source": {
+      "enum": [
+        "live",
+        "playback",
+        "manual",
+        "import"
+      ]
+    },
+    "start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "duration_s": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stop_reason": {
+      "enum": [
+        "call_ended",
+        "max_duration",
+        "user_stop",
+        "silence",
+        "app_quit",
+        "n/a"
+      ]
+    },
+    "language": {
+      "type": "string",
+      "default": "cs"
+    },
+    "tracks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sys": {
+          "$ref": "#/$defs/track"
+        },
+        "mic": {
+          "$ref": "#/$defs/track"
+        }
+      }
+    },
+    "mix": {
+      "$ref": "#/$defs/track"
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "organizer",
+              "required",
+              "optional",
+              "self"
+            ]
+          }
+        }
+      }
+    },
+    "teams_windows_seen": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "origin_file": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "track": {
+      "type": "object",
+      "required": [
+        "file",
+        "sample_rate",
+        "channels"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[^/\\\\]+\\.wav$"
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 8000
+        },
+        "channels": {
+          "enum": [
+            1,
+            2
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "const": "import"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "mix",
+          "origin_file"
+        ]
+      },
+      "else": {
+        "properties": {
+          "tracks": {
+            "required": [
+              "sys"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

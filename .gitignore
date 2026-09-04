@@ -1,0 +1,18 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.swp
+TestResults/
+artifacts/
+publish/
+
+# local
+*.log
+/recordings/
+
+# IDE
+.idea/
+.vscode/

@@ -1,4 +1,4 @@
-"""
+r"""
 teamsrec.py — prompt-to-record for Microsoft Teams calls (Windows, new Teams).
 
 What it does
@@ -7,8 +7,12 @@ What it does
   * Pops a small always-on-top prompt: "Record <meeting title>?"  Auto-skips after a timeout.
   * Records system audio (WASAPI loopback = the other people) and your mic into two WAVs,
     stops automatically when the call ends (or on max duration / tray "Stop").
-  * Names files  <OUT_DIR>\<YYYY>\<MM>\<YYYY-MM-DD>_<HHMM>_<slug>_sys.wav / _mic.wav
-    plus a _mix.wav (mono 16 kHz, WhisperX-ready) if ffmpeg is on PATH, plus a .json sidecar.
+  * Names files  <OUT_DIR>\<YYYY>\<MM>\<stem>\<stem>_sys.wav / _mic.wav  (stem = <YYYY-MM-DD>_<HHMM>_<slug>)
+    plus a _mix.wav (mono 16 kHz, WhisperX-ready) if ffmpeg is found, plus a .json sidecar in the
+    teamsrec recording format v1 (docs/recording-format.md). OUT_DIR comes from the shared
+    %APPDATA%\teamsrec\teamsrec.toml when present.
+  * "Record playback": records only the system track (a stored Teams recording being played back),
+    stops after 30 s of silence.
   * Deletes recordings shorter than MIN_DURATION_S, and everything on "Abort & delete".
   * Optional POST_HOOK shell command per finished recording (e.g. ship to the homelab).
 
@@ -21,21 +25,29 @@ Run at login
 Tell the other participants you're recording. Teams shows them nothing for this.
 """
 
+import audioop
+import glob
 import json
 import logging
+import os
 import queue
 import re
 import shutil
 import subprocess
 import threading
 import time
+import tomllib
 import unicodedata
+import warnings
 import wave
 import winreg
 import winsound
 import tkinter as tk
+from tkinter import simpledialog
 from datetime import datetime
 from pathlib import Path
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)  # audioop is deprecated but fine on 3.12
 
 import psutil
 import pyaudiowpatch as pyaudio
@@ -45,13 +57,39 @@ import win32process
 from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
-OUT_DIR = Path(r"D:\meetings")
+APP_NAME = "teamsrec-prototype"
+APP_VERSION = "0.2.0"
+FORMAT_VERSION = 1  # docs/recording-format.md
+
+
+def _config_out_dir() -> Path:
+    """Shared config with teamsrec-transcribe: %APPDATA%/teamsrec/teamsrec.toml [recordings].out_dir."""
+    cfg = Path(os.environ.get("TEAMSREC_CONFIG") or Path(os.environ.get("APPDATA", "")) / "teamsrec" / "teamsrec.toml")
+    try:
+        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+        return Path(data["recordings"]["out_dir"]).expanduser()
+    except (OSError, KeyError, ValueError):
+        return Path(r"D:\meetings")
+
+
+OUT_DIR = _config_out_dir()
+SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
+SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 POLL_S = 3                 # how often to check for a call
 PROMPT_TIMEOUT_S = 45      # prompt auto-skips after this
-MIN_DURATION_S = 120       # shorter recordings are deleted
+MIN_DURATION_S = 5         # shorter recordings are deleted
 MAX_DURATION_S = 4 * 3600  # safety net
 CALL_END_GRACE_S = 10      # call must look ended this long before we stop
 MIX_WITH_FFMPEG = True
+
+
+def _ffmpeg() -> str | None:
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    d = os.environ.get("TEAMSREC_FFMPEG_DIR")
+    cands = [str(Path(d) / "ffmpeg.exe")] if d else []
+    cands += glob.glob(str(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/WinGet/Packages/Gyan.FFmpeg_*/ffmpeg-*/bin/ffmpeg.exe"))
+    return next((c for c in cands if Path(c).exists()), None)
 # Shell command run after each kept recording. Placeholders: {stem} {sys} {mic} {mix} {json} {dir}
 # POST_HOOK = r'scp "{mix}" homelab:/data/meetings/ && ssh homelab "~/bin/transcribe.sh {stem}_mix.wav"'
 POST_HOOK = None
@@ -144,19 +182,25 @@ def slug(s: str, n: int = 60) -> str:
 
 # ---------------------------------------------------------------- recorder
 class Recorder:
-    def __init__(self, stem: Path):
+    def __init__(self, stem: Path, with_mic: bool = True):
         self.stem = stem
+        self.with_mic = with_mic
         self.started = datetime.now()
         self.pa = pyaudio.PyAudio()
         self.streams, self.writers = [], []
+        self.tracks: dict[str, dict] = {}   # "sys"/"mic" -> {file, sample_rate, channels}
+        self.last_loud = time.time()        # last time the system track was not silent
+        self.bytes_received = 0             # watchdog: a sleeping Bluetooth device delivers nothing at all
 
-    def _open(self, dev, suffix):
+    def _open(self, dev, suffix, name):
         rate = int(dev["defaultSampleRate"])
         ch = max(1, min(2, int(dev["maxInputChannels"])))
         path = Path(f"{self.stem}{suffix}")
         wf = wave.open(str(path), "wb")
         wf.setnchannels(ch); wf.setsampwidth(2); wf.setframerate(rate)
         q: queue.Queue = queue.Queue()
+        self.tracks[name] = {"file": path.name, "sample_rate": rate, "channels": ch}
+        is_sys = name == "sys"
 
         def writer():
             while (chunk := q.get()) is not None:
@@ -165,6 +209,9 @@ class Recorder:
 
         def cb(data, frames, ti, status):
             q.put(data)
+            self.bytes_received += len(data)
+            if is_sys and audioop.max(data, 2) > SILENCE_LEVEL:
+                self.last_loud = time.time()
             return (None, pyaudio.paContinue)
 
         s = self.pa.open(format=pyaudio.paInt16, channels=ch, rate=rate, input=True,
@@ -176,13 +223,14 @@ class Recorder:
         return path
 
     def start(self) -> list[Path]:
-        files = [self._open(self.pa.get_default_wasapi_loopback(), "_sys.wav")]
-        try:
-            wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-            mic = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
-            files.append(self._open(mic, "_mic.wav"))
-        except Exception as e:  # no mic is not fatal
-            log.warning("mic not recorded: %s", e)
+        files = [self._open(self.pa.get_default_wasapi_loopback(), "_sys.wav", "sys")]
+        if self.with_mic:
+            try:
+                wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+                mic = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
+                files.append(self._open(mic, "_mic.wav", "mic"))
+            except Exception as e:  # no mic is not fatal
+                log.warning("mic not recorded: %s", e)
         for s in self.streams:
             s.start_stream()
         return files
@@ -251,6 +299,8 @@ class App:
         self.files: list[Path] = []
         self.titles_seen: set[str] = set()
         self.manual = False
+        self.playback = False
+        self.no_audio_warned = False
         self.declined = False
         self.call_missing_since = None
         self.lock = threading.Lock()
@@ -259,6 +309,8 @@ class App:
             pystray.MenuItem(lambda _: self.status(), None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Record now (manual)", lambda: self.start("manual", manual=True),
+                             enabled=lambda _: self.rec is None),
+            pystray.MenuItem("Record playback (system audio only)", self.start_playback,
                              enabled=lambda _: self.rec is None),
             pystray.MenuItem("Stop & keep", lambda: self.stop("tray stop"),
                              enabled=lambda _: self.rec is not None),
@@ -280,24 +332,40 @@ class App:
         self.icon.title = self.status()
         self.icon.update_menu()
 
-    def start(self, title, manual=False):
+    def start_playback(self):
+        """Record what is being played (a stored Teams recording): system track only, stops on silence."""
+        def ask():
+            try:
+                default = win32gui.GetWindowText(win32gui.GetForegroundWindow()) or "playback"
+            except Exception:
+                default = "playback"
+            root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+            title = simpledialog.askstring("teamsrec", "Title of the recording being played:",
+                                           initialvalue=default, parent=root)
+            root.destroy()
+            if title:
+                self.start(title, manual=True, playback=True)
+        threading.Thread(target=ask, daemon=True).start()
+
+    def start(self, title, manual=False, playback=False):
         with self.lock:
             if self.rec:
                 return
             now = datetime.now()
-            stem = OUT_DIR / f"{now:%Y}" / f"{now:%m}" / f"{now:%Y-%m-%d}_{now:%H%M}_{slug(title)}"
+            name = f"{now:%Y-%m-%d}_{now:%H%M}_{slug(title)}"
+            stem = OUT_DIR / f"{now:%Y}" / f"{now:%m}" / name / name
             stem.parent.mkdir(parents=True, exist_ok=True)
             try:
-                rec = Recorder(stem)
+                rec = Recorder(stem, with_mic=not playback)
                 self.files = rec.start()
             except Exception as e:
                 log.exception("start failed")
                 self.icon.notify(f"Recording failed: {e}", "teamsrec")
                 return
-            self.rec, self.title, self.manual = rec, title, manual
-            self.titles_seen, self.call_missing_since = set(), None
+            self.rec, self.title, self.manual, self.playback = rec, title, manual, playback
+            self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
         self._refresh()
-        log.info("START '%s' -> %s", title, stem)
+        log.info("START '%s' (%s) -> %s", title, "playback" if playback else "manual" if manual else "live", stem)
 
     def stop(self, reason):
         with self.lock:
@@ -311,17 +379,25 @@ class App:
         if reason == "aborted" or dur < MIN_DURATION_S:
             for p in files:
                 p.unlink(missing_ok=True)
+            try:
+                rec.stem.parent.rmdir()  # the recording folder, now empty
+            except OSError:
+                pass
             log.info("deleted (%s)", "aborted" if reason == "aborted" else "too short")
             self.icon.notify("Recording discarded", "teamsrec")
             return
         threading.Thread(target=self._finalize, args=(rec, files, dur, reason), daemon=True).start()
 
+    STOP_REASONS = {"call ended": "call_ended", "max duration": "max_duration", "tray stop": "user_stop",
+                    "silence": "silence", "quit": "app_quit"}
+
     def _finalize(self, rec, files, dur, reason):
         stem = rec.stem
         mix = None
-        if MIX_WITH_FFMPEG and shutil.which("ffmpeg"):
+        ff = _ffmpeg() if MIX_WITH_FFMPEG else None
+        if ff:
             mix = Path(f"{stem}_mix.wav")
-            cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+            cmd = [ff, "-y", "-loglevel", "error"]
             for p in files:
                 cmd += ["-i", str(p)]
             cmd += ["-filter_complex", f"amix=inputs={len(files)}:duration=longest:normalize=0",
@@ -329,14 +405,20 @@ class App:
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode:
                 log.error("ffmpeg: %s", r.stderr); mix = None
+        source = "playback" if self.playback else "manual" if self.manual else "live"
         meta = {
-            "title": self.title, "start": rec.started.isoformat(timespec="seconds"),
+            "format": FORMAT_VERSION, "app": APP_NAME, "app_version": APP_VERSION,
+            "title": self.title, "slug": slug(self.title), "source": source,
+            "start": rec.started.isoformat(timespec="seconds"),
             "end": datetime.now().isoformat(timespec="seconds"), "duration_s": round(dur),
-            "stop_reason": reason, "files": [p.name for p in files],
-            "mix": mix.name if mix else None, "teams_windows_seen": sorted(self.titles_seen),
+            "stop_reason": self.STOP_REASONS.get(reason, "user_stop"),
+            "tracks": {k: v for k, v in rec.tracks.items() if (stem.parent / v["file"]).exists()},
+            "teams_windows_seen": sorted(self.titles_seen),
         }
-        jpath = Path(f"{stem}.json")
-        jpath.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        if mix:
+            meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
+        jpath = Path(f"{stem}.json")  # written last: marks the recording as complete
+        jpath.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self.icon.notify(f"Saved {stem.name} ({round(dur / 60)} min)", "teamsrec")
         if POST_HOOK:
             fmt = dict(stem=stem.name, dir=str(stem.parent), json=str(jpath),
@@ -355,8 +437,15 @@ class App:
                 if self.rec:
                     self.titles_seen.update(teams_window_titles())
                     elapsed = (datetime.now() - self.rec.started).total_seconds()
+                    if elapsed > 10 and self.rec.bytes_received == 0 and not self.no_audio_warned:
+                        self.no_audio_warned = True
+                        log.warning("no audio data from the default devices after 10 s (headset off? wrong default device?)")
+                        self.icon.notify("No audio is arriving from the default devices. Headset off?", "teamsrec")
                     if elapsed > MAX_DURATION_S:
                         self.stop("max duration")
+                    elif self.playback:
+                        if elapsed > 15 and time.time() - self.rec.last_loud >= SILENCE_STOP_S:
+                            self.stop("silence")
                     elif not self.manual:
                         if in_call:
                             self.call_missing_since = None

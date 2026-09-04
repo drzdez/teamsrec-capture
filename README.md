@@ -24,8 +24,9 @@ Start it once (or let it autostart at login) and forget about it. It sits in the
 1. When Teams starts using the microphone, a small always-on-top prompt appears in the top-right corner:
    **Record "<meeting title>"? [● Record] [Skip]**. It auto-skips after 45 s. Enter = record, Esc = skip.
 2. While recording, the tray icon is red and shows the elapsed time. Tray menu: **Stop & keep**, **Abort & delete**.
-3. Recording stops by itself ~10 s after the call ends (hard cap 4 h). Recordings shorter than 2 min are discarded.
-4. Files land in `<OUT_DIR>/YYYY/MM/<date>_<time>_<title-slug>_sys.wav`, `_mic.wav`, `_mix.wav` + `.json` sidecar.
+3. Recording stops by itself ~10 s after the call ends (hard cap 4 h). Recordings shorter than a minimum length are discarded (5 s in the prototype, `MIN_DURATION_S`; 2 min planned as the default).
+4. Files land in one folder per recording, `<OUT_DIR>/YYYY/MM/<stem>/`, as `<stem>_sys.wav`, `_mic.wav`,
+   `_mix.wav` + `<stem>.json` sidecar (stem = `<date>_<time>_<title-slug>`).
 
 Manual modes in the tray menu:
 
@@ -57,10 +58,11 @@ autostart = true             # register in the Startup folder
 
 ## Using the prototype today
 
-`legacy/teamsrec.py` implements the live-call flow above (detection, prompt, dual-track recording, mix, sidecar).
-Differences from the target: settings are constants at the top of the file (`OUT_DIR = D:\meetings` …), no
-playback mode (use *Record now* and stop manually), and the sidecar predates the contract (no `format`, `source`,
-`tracks` fields).
+`legacy/teamsrec.py` implements the flow above: detection, prompt, dual-track recording, *Record now*,
+*Record playback* (system track only, stops after 30 s of silence), mix, and a sidecar in the contract's format v1
+(`source` = live / manual / playback). It reads `out_dir` from the shared `%APPDATA%\teamsrec\teamsrec.toml`;
+the other settings are constants at the top of the file. Recordings it makes are processed by
+`teamsrec-transcribe process` like any other.
 
 Setup (once):
 
@@ -68,7 +70,7 @@ Setup (once):
 cd legacy
 uv venv --python 3.12 .venv
 uv pip install --python .venv/Scripts/python.exe pyaudiowpatch pystray pillow pywin32 psutil
-winget install Gyan.FFmpeg        # optional: enables the _mix.wav
+winget install Gyan.FFmpeg        # enables the _mix.wav (found automatically in the WinGet folder)
 ```
 
 Run: double-click `legacy/run_teamsrec.cmd` (no console) or `run_teamsrec_console.cmd` (shows errors).
@@ -76,7 +78,7 @@ Log: `<OUT_DIR>/teamsrec.log`. Autostart: put a shortcut to `run_teamsrec.cmd` i
 
 Testing without a real meeting: in Teams use *Calendar → Meet now* and join alone, or *Settings → Devices →
 Make a test call* — both make Teams grab the microphone, so the prompt appears within 3 s. Leaving the call stops
-the recording after ~10 s. Remember the 2-minute minimum, shorter recordings are deleted.
+the recording after ~10 s. Recordings shorter than `MIN_DURATION_S` (5 s) are deleted.
 
 The prototype uses the Windows default devices; restart it after switching headsets.
 

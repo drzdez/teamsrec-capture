@@ -10,19 +10,22 @@ Strojově čitelná podoba sidecaru: [`recording.schema.json`](recording.schema.
 <OUT_DIR>/
   <YYYY>/
     <MM>/
-      <YYYY-MM-DD>_<HHMM>_<slug>.json        sidecar (metadata nahrávky)      capture
-      <YYYY-MM-DD>_<HHMM>_<slug>_sys.wav     systémový zvuk (loopback)         capture
-      <YYYY-MM-DD>_<HHMM>_<slug>_mic.wav     mikrofon (jen source=live)        capture
-      <YYYY-MM-DD>_<HHMM>_<slug>_mix.wav     mono 16 kHz mix pro ASR           capture
-      <YYYY-MM-DD>_<HHMM>_<slug>.transcript.json   normalizovaný přepis        transcribe
-      <YYYY-MM-DD>_<HHMM>_<slug>.speakers.json     mapování mluvčí → jméno     transcribe (ručně)
-      <YYYY-MM-DD>_<HHMM>_<slug>.speakers_video.json   časová osa mluvčích z videa   transcribe (import s videem)
-      <YYYY-MM-DD>_<HHMM>_<slug>.txt               přepis pro čtení            transcribe
-      <YYYY-MM-DD>_<HHMM>_<slug>.srt               titulky                     transcribe
-      <YYYY-MM-DD>_<HHMM>_<slug>.summary.md        zápis, shrnutí, úkoly       transcribe
+      <stem>/                                jedna složka na nahrávku, stem = <YYYY-MM-DD>_<HHMM>_<slug>
+        <stem>.json                          sidecar (metadata nahrávky)      capture
+        <stem>_sys.wav                       systémový zvuk (loopback)         capture
+        <stem>_mic.wav                       mikrofon (jen source=live)        capture
+        <stem>_mix.wav                       mono 16 kHz mix pro ASR           capture
+        <stem>.transcript.json               normalizovaný přepis              transcribe
+        <stem>.speakers.json                 mapování mluvčí → jméno           transcribe (ručně)
+        <stem>.speakers_video.json           časová osa mluvčích z videa       transcribe (import s videem)
+        <stem>.txt                           přepis pro čtení                  transcribe
+        <stem>.srt                           titulky                           transcribe
+        <stem>.summary.md                    zápis, shrnutí, úkoly             transcribe
 ```
 
-- Nahrávky jsou členěny do adresářů `<YYYY>/<MM>/` podle lokálního času začátku nahrávky. Všechny soubory jedné nahrávky leží v jednom adresáři vedle sebe.
+- Nahrávky jsou členěny do adresářů `<YYYY>/<MM>/<stem>/` podle lokálního času začátku nahrávky. Každá nahrávka má
+  vlastní složku pojmenovanou stemem; všechny její soubory leží v ní a nesou stem v názvu, takže zůstávají
+  jednoznačné i po zkopírování nebo odeslání jinam. Smazání či přesun nahrávky je operace s jednou složkou.
 - `stem` = `<YYYY-MM-DD>_<HHMM>_<slug>`; čas je lokální čas začátku nahrávky.
 - `slug`: název schůzky po NFKD normalizaci, bez diakritiky, `[^A-Za-z0-9]+` → `-`, lowercase, max 60 znaků, fallback `teams-call`.
 - Nahrávka je **hotová**, až když existuje sidecar `.json`. Do té doby do adresáře nikdo jiný nesahá. Capture zapisuje sidecar jako poslední krok.
@@ -107,7 +110,7 @@ ale vstup pro import. Platí pro libovolné audio nebo video (mp4, m4a, mp3, wav
   3. název souboru bez přípony jako `title` a čas změny souboru jako `start`.
 - Sidecar dostane navíc `origin_path` (absolutní cesta k původnímu souboru) a `metadata_source` (`teams-name`,
   `container`, `file`, `user`), aby bylo vidět, jak spolehlivé `title` a `start` jsou.
-- Nahrávka se vždy normalizuje do `<OUT_DIR>/YYYY/MM/<stem>` s `_mix.wav`; jiné rozložení neexistuje.
+- Nahrávka se vždy normalizuje do `<OUT_DIR>/YYYY/MM/<stem>/` s `_mix.wav`; jiné rozložení neexistuje.
   Původní soubor zůstává na místě.
 - **Schránka `<OUT_DIR>/_inbox/`:** cokoli sem uživatel přetáhne, se importuje při dalším běhu
   `teamsrec-transcribe process` (nebo watcherem), soubor se po úspěšném importu přesune do `_inbox/done/`.

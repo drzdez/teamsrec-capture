@@ -117,6 +117,17 @@
     },
     "origin_file": {
       "type": "string"
+    },
+    "origin_path": {
+      "type": "string"
+    },
+    "metadata_source": {
+      "enum": [
+        "teams-name",
+        "container",
+        "file",
+        "user"
+      ]
     }
   },
   "$defs": {

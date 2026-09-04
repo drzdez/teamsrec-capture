@@ -77,6 +77,8 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 | `tracks.mic` | track | ne | mikrofon = uživatel; chybí u `playback` |
 | `mix` | track | ne | mono 16 kHz součet všech stop, vstup pro cloudové ASR; chybí, když mix selhal; u `import` jediná a povinná stopa |
 | `origin_file` | string | ne | jen `import`: původní název souboru, ze kterého nahrávka vznikla |
+| `origin_path` | string | ne | jen `import`: absolutní cesta k původnímu souboru v době importu |
+| `metadata_source` | enum | ne | jen `import`: odkud jsou `title` a `start`: `teams-name`, `container`, `file`, `user` |
 | `participants[]` | objekt | ne | z kalendáře, pokud dostupné; `role` ∈ `organizer`, `required`, `optional`, `self` |
 | `teams_windows_seen[]` | string | ne | ladicí informace |
 
@@ -91,6 +93,26 @@ audio/video soubor se do adresáře nahrávek dostane příkazem `teamsrec-trans
 - Zvuk se převede na `<stem>_mix.wav` (mono 16 kHz PCM); `tracks` je prázdný objekt, `stop_reason` = `n/a`, `origin_file` = původní název.
 - Diarizace pracuje jen nad `mix`, stopa `mic` neexistuje, takže mluvčí `me` se neurčuje automaticky.
 - Původní soubor se nekopíruje ani nemaže.
+
+### Ad-hoc soubory bez sidecaru
+
+Pravidlo: **sidecar vytvoří ten nástroj, který se nahrávky dotkne jako první.** Nahrávka bez sidecaru není chyba,
+ale vstup pro import. Platí pro libovolné audio nebo video (mp4, m4a, mp3, wav, webm, mkv…), nejen pro záznamy Teams.
+
+- `teamsrec-transcribe transcribe <soubor>` nad souborem bez sidecaru provede import implicitně a pokračuje přepisem.
+  Není potřeba volat `import` zvlášť.
+- Metadata se odvozují v tomto pořadí a lze je přepsat parametry `--title`, `--start`, `--language`, `--participants`:
+  1. vzor názvu záznamu Teams (`<Název>-YYYYMMDD_HHMMSS-Meeting Recording`),
+  2. `creation_time` z metadat kontejneru (ffprobe),
+  3. název souboru bez přípony jako `title` a čas změny souboru jako `start`.
+- Sidecar dostane navíc `origin_path` (absolutní cesta k původnímu souboru) a `metadata_source` (`teams-name`,
+  `container`, `file`, `user`), aby bylo vidět, jak spolehlivé `title` a `start` jsou.
+- Nahrávka se vždy normalizuje do `<OUT_DIR>/YYYY/MM/<stem>` s `_mix.wav`; jiné rozložení neexistuje.
+  Původní soubor zůstává na místě.
+- **Schránka `<OUT_DIR>/_inbox/`:** cokoli sem uživatel přetáhne, se importuje při dalším běhu
+  `teamsrec-transcribe process` (nebo watcherem), soubor se po úspěšném importu přesune do `_inbox/done/`.
+- Analýza mluvčích z videa se pokusí jen o rozložení Teams. Když ve videu nenajde zvýrazněné jmenovky
+  (Zoom, Meet, jiný layout), tiše skončí a mluvčí dá diarizace.
 
 ## Přepis `<stem>.transcript.json`
 

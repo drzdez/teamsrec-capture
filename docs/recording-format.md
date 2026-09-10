@@ -150,9 +150,22 @@ Normalizovaný výstup každého transkripčního providera. Vše za providerem 
 Přepis zvuku je vždy stejný. Liší se jen, odkud se bere „kdo mluví“, a to podle toho, co nahrávka má, ne podle přípony:
 
 1. `speakers_video.json` (import záznamu Teams s videem) – segment dostane jméno s největším překryvem.
-2. Stopa `mic` (živá nahrávka) – co je slyšet v mikrofonu, je `me`.
+2. Stopa `mic` (živá nahrávka) – diarizační označení, které se kryje s aktivitou mikrofonu, dostane jméno
+   uživatele z konfigurace (`[user] name`). Ověřeno 2026-09-10: 89 % aktivity u uživatele, 13–21 % u ostatních.
 3. Diarizace – vždy se spouští, slouží jako záloha pro segmenty bez překryvu a pro účastníky, kteří na videu nejsou.
    Ti zůstávají jako `SPEAKER_XX`, dokud je uživatel nepojmenuje v `speakers.json`.
+
+Plánované zdroje (rozhodnutí 2026-09-10, pořadí realizace):
+
+4. **Hlasové otisky** (teamsrec-transcribe): jakmile uživatel mluvčího jednou pojmenuje v `speakers.json`, uloží se
+   jeho hlasový otisk (pyannote embedding, lokálně, mimo nahrávku). Další nahrávky – živé, importy i přehrávání –
+   ho pojmenují automaticky, se stejnou prioritou jako mikrofon (nad diarizací, pod videem). Plní se postupně,
+   schůzku po schůzce.
+5. **Snímání okna Teams při živé nahrávce** (teamsrec-capture, .NET port): během hovoru se ~2× za sekundu snímá
+   okno Teams s galerií účastníků a ukládá jako malé video (`<stem>_screen.mp4`, 720p, 2 fps). Po hovoru se
+   zpracuje stejnou analýzou jako stažený záznam a vznikne `speakers_video.json`. Při sdílení obrazovky Teams
+   zobrazuje galerii v druhém (vyskakovacím) okně – snímá se to okno Teams, ve kterém jsou jmenovky, ne nutně hlavní.
+   Minimalizované okno snímat nelze; takové úseky kryje diarizace a hlasové otisky.
 
 ## Mluvčí z videa `<stem>.speakers_video.json`
 

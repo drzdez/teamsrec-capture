@@ -54,6 +54,9 @@ silence_stop_s = 30          # playback mode: stop after this much silence
 language = "cs"              # expected meeting language, written to the sidecar (auto-detect happens later)
 devices = "default"          # or explicit WASAPI device names for loopback / mic
 autostart = true             # register in the Startup folder
+
+[user]
+name = "Zdeněk"      # read by teamsrec-transcribe: the mic track of a live recording is this person
 ```
 
 ## Using the prototype today
@@ -102,6 +105,11 @@ The prototype uses the Windows default devices; restart it after switching heads
 - Meeting title from the Teams window title; classic Outlook calendar (COM) as a later, better source of title
   and participants
 - Windows only; single-file publish, winget/MSIX later
+- Planned (2026-09-10): capture the Teams window with the participant gallery during a live call as a low-fps video
+  (`<stem>_screen.mp4`), so the active-speaker names come from the same video analysis used for imported Teams
+  recordings. When someone shares their screen, Teams shows the gallery in its pop-out window: the capture follows
+  whichever Teams window shows the name labels. A minimized window cannot be captured; diarization and voice prints
+  cover those stretches.
 
 ## Consent
 

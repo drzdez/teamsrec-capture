@@ -52,8 +52,11 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)  # audioop is dep
 import psutil
 import pyaudiowpatch as pyaudio
 import pystray
+import win32api
+import win32event
 import win32gui
 import win32process
+import winerror
 from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
@@ -479,5 +482,15 @@ class App:
         self.icon.run()
 
 
+def _single_instance() -> bool:
+    """True if we are the only teamsrec running (autostart + desktop shortcut must not record twice)."""
+    global _MUTEX
+    _MUTEX = win32event.CreateMutex(None, False, "Local\\teamsrec-capture")
+    return win32api.GetLastError() != winerror.ERROR_ALREADY_EXISTS
+
+
 if __name__ == "__main__":
+    if not _single_instance():
+        log.info("teamsrec is already running, exiting")
+        raise SystemExit(0)
     App().run()

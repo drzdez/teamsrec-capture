@@ -74,7 +74,19 @@ winget install Gyan.FFmpeg        # enables the _mix.wav (found automatically in
 ```
 
 Run: double-click `legacy/run_teamsrec.cmd` (no console) or `run_teamsrec_console.cmd` (shows errors).
-Log: `<OUT_DIR>/teamsrec.log`. Autostart: put a shortcut to `run_teamsrec.cmd` into `shell:startup`.
+Log: `<OUT_DIR>/teamsrec.log`.
+
+Autostart at login: put a shortcut to `legacy/run_teamsrec.cmd` into the Startup folder (Win+R -> `shell:startup`),
+window style *Minimized*. Or from PowerShell:
+
+```
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Startup'))\teamsrec - capture.lnk")
+$s.TargetPath = "D:\projects\teamsrec-capture\legacy\run_teamsrec.cmd"; $s.WorkingDirectory = "D:\projects\teamsrec-capture\legacy"
+$s.WindowStyle = 7; $s.Save()
+```
+
+A second start (desktop shortcut while the autostarted one is running) exits immediately: the app holds a
+named mutex, so only one instance ever records.
 
 Testing without a real meeting: in Teams use *Calendar → Meet now* and join alone, or *Settings → Devices →
 Make a test call* — both make Teams grab the microphone, so the prompt appears within 3 s. Leaving the call stops

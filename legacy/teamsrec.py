@@ -96,9 +96,18 @@ def _ffmpeg() -> str | None:
 # Shell command run after each kept recording. Placeholders: {stem} {sys} {mic} {mix} {json} {dir}
 # POST_HOOK = r'scp "{mix}" homelab:/data/meetings/ && ssh homelab "~/bin/transcribe.sh {stem}_mix.wav"'
 POST_HOOK = None
-# Nav sections of the main Teams window, so they are not mistaken for a meeting title
+# Nav sections of the main Teams window (en + cs), so they are not mistaken for a meeting title
 TEAMS_NAV = {"activity", "chat", "teams", "calendar", "calls", "files", "apps", "copilot",
-             "onedrive", "meet", "viva", "planner", "microsoft teams"}
+             "onedrive", "meet", "viva", "planner", "microsoft teams",
+             "aktivita", "týmy", "kalendář", "hovory", "soubory", "aplikace", "schůzka"}
+# Titles the meeting window carries before/without a subject (en + cs); a later window title is better
+TEAMS_GENERIC = {"meeting", "join meeting", "meeting compact view", "compact view", "call", "teams-call",
+                 "připojení ke schůzce", "kompaktní zobrazení schůzky", "kompaktní zobrazení", "hovor", "schůzka"}
+
+
+def is_generic_title(title: str | None) -> bool:
+    t = (title or "").strip().lower()
+    return not t or t in TEAMS_GENERIC or t in TEAMS_NAV or t.startswith("meeting compact")
 TEAMS_EXE = {"ms-teams.exe", "teams.exe"}
 # ------------------------------------------------------------------
 
@@ -171,7 +180,7 @@ def guess_meeting_title(titles: list[str]) -> str | None:
         if len(parts) < 2 or parts[-1].lower() != "microsoft teams":
             continue
         head = parts[0]
-        if head.lower() in TEAMS_NAV or head.lower().startswith("meeting compact"):
+        if is_generic_title(head):
             continue
         return head
     return None
@@ -409,9 +418,15 @@ class App:
             if r.returncode:
                 log.error("ffmpeg: %s", r.stderr); mix = None
         source = "playback" if self.playback else "manual" if self.manual else "live"
+        title = self.title
+        if is_generic_title(title):  # the window got its real subject only later in the call
+            better = guess_meeting_title(sorted(self.titles_seen))
+            if better:
+                log.info("title '%s' replaced by '%s' seen during the call", title, better)
+                title = better
         meta = {
             "format": FORMAT_VERSION, "app": APP_NAME, "app_version": APP_VERSION,
-            "title": self.title, "slug": slug(self.title), "source": source,
+            "title": title, "slug": slug(title), "source": source,
             "start": rec.started.isoformat(timespec="seconds"),
             "end": datetime.now().isoformat(timespec="seconds"), "duration_s": round(dur),
             "stop_reason": self.STOP_REASONS.get(reason, "user_stop"),

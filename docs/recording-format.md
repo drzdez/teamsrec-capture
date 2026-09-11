@@ -31,6 +31,13 @@ Strojově čitelná podoba sidecaru: [`recording.schema.json`](recording.schema.
 - Nahrávka je **hotová**, až když existuje sidecar `.json`. Do té doby do adresáře nikdo jiný nesahá. Capture zapisuje sidecar jako poslední krok.
 - Nahrávky kratší než limit (výchozí 120 s) a zrušené nahrávky capture smaže bez sidecaru.
 
+### Přejmenování
+
+Název schůzky lze změnit dodatečně (`teamsrec-transcribe rename`, kontrolní stránka). Stem se přepočítá ze
+stejného data a času a nového slugu; složka i všechny soubory `<stem>.*` se přejmenují, sidecar (`title`, `slug`,
+názvy stop a mixu), nadpisy zápisů a odkazy na stem v `_speakers/voiceprints.json` se opraví. Stejný slug
+z jinak zapsaného názvu složku nemění. Kolize s existující složkou se odmítne.
+
 ## Retence
 
 Audio je dočasné, přepis trvalý. WAV soubory (`_sys`, `_mic`, `_mix`) lze po úspěšné transkripci smazat
@@ -155,12 +162,16 @@ Přepis zvuku je vždy stejný. Liší se jen, odkud se bere „kdo mluví“, a
 3. Diarizace – vždy se spouští, slouží jako záloha pro segmenty bez překryvu a pro účastníky, kteří na videu nejsou.
    Ti zůstávají jako `SPEAKER_XX`, dokud je uživatel nepojmenuje v `speakers.json`.
 
-Plánované zdroje (rozhodnutí 2026-09-10, pořadí realizace):
+4. **Hlasové otisky** (`_speakers/voiceprints.json`, od 2026-09-11): diarizace vrací pro každé označení
+   embedding (pyannote community-1); přepis ho ukládá v `speaker_embeddings` (klíč = výsledné jméno/označení,
+   jednotkový vektor). Když označení dostane osobu (stránka, `label-speakers`, mikrofonní stopa uživatele),
+   embedding se uloží pod osobu (nejvýš 10 na osobu, se stemem a označením původu). U nové nahrávky se
+   neznámá označení porovnají kosinovou podobností; shoda ≥ `threshold` s odstupem ≥ `margin` od druhé nejlepší
+   osoby zapíše osobu do `speakers.json` (jako ruční přiřazení, lze opravit) a do přepisu `voice_matches`
+   `{označení: {person, score}}`. Zdroj `voiceprint` v `speaker_sources`.
 
-4. **Hlasové otisky** (teamsrec-transcribe): jakmile uživatel mluvčího jednou pojmenuje v `speakers.json`, uloží se
-   jeho hlasový otisk (pyannote embedding, lokálně, mimo nahrávku). Další nahrávky – živé, importy i přehrávání –
-   ho pojmenují automaticky, se stejnou prioritou jako mikrofon (nad diarizací, pod videem). Plní se postupně,
-   schůzku po schůzce.
+Plánované zdroje:
+
 5. **Snímání okna Teams při živé nahrávce** (teamsrec-capture, .NET port): během hovoru se ~2× za sekundu snímá
    okno Teams s galerií účastníků a ukládá jako malé video (`<stem>_screen.mp4`, 720p, 2 fps). Po hovoru se
    zpracuje stejnou analýzou jako stažený záznam a vznikne `speakers_video.json`. Při sdílení obrazovky Teams
@@ -192,6 +203,10 @@ Registr osob mimo nahrávky, jeden soubor pro celý `OUT_DIR` (vedle něj budou 
 Režim `nick` bez přezdívky znamená jméno. Přepis i `speakers.json` uchovávají identifikátor osoby (`id`) nebo
 doslovné jméno z videa či mikrofonu; zobrazovaná podoba se určuje až při exportu a zápisu. Neregistrovaná jména se
 tisknou doslova.
+
+Soubor `_speakers/voiceprints.json`: `{"format": 1, "model": "<diarizační model>", "people": {"<id>": [{"v": [...],
+"stem": "...", "label": "...", "added": "..."}]}}`. Odvozený, smazatelný; otisky jedné osoby maže
+`people forget-voice`.
 
 ## Mluvčí `<stem>.speakers.json`
 

@@ -13,9 +13,11 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
 
 ## Další kroky (v tomto pořadí, rozhodnuto 2026-09-10/11)
 
-1. ☐ **Hlasové otisky** (transcribe). Kdo je jednou pojmenován, toho další nahrávky poznají po hlase; vzorky
-   ve `_speakers/<osoba>/samples/*.wav`, otisk jen odvozená mezipaměť. Řeší i dva kolegy na jednom připojení.
-   Detaily v `recording-format.md`, sekce Zdroje mluvčích.
+1. ☑ **Hlasové otisky** (transcribe), 2026-09-11. Bez ukládání zvukových vzorků: diarizace už embedding vrací,
+   ukládá se přímo (`_speakers/voiceprints.json`). Kdo je jednou pojmenován, toho další nahrávky poznají po
+   hlase; rozpoznání se zapíše jako přiřazení a stránka ho ukáže k potvrzení. Práh a odstup kalibrovány na
+   prvních nahrávkách, viz `lab/FINDINGS.md`. K rozhodnutí uživatele: výchozí zapnuto, automatické přiřazení
+   (ne jen návrh), informování týmu o biometrii.
 2. ☑ **Kontrolní stránka** (transcribe, příkaz `review`). Hotovo 2026-09-11: přehrání ukázek, jména, sloučení,
    uložení, přegenerování, výběr nahrávky, zástupce na ploše, záložka Lidé (jméno, příjmení, přezdívka, co psát
    do zápisu). Hlasové vzorky se do záložky doplní s otisky. Lokální stránka v prohlížeči: přehrát ukázky každého

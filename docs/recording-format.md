@@ -183,5 +183,5 @@ překryvem, diarizace slouží jen jako záloha pro segmenty bez překryvu. Jmé
 Ruční mapování po transkripci. Když existuje, export a summary používají jména místo identifikátorů.
 
 ```json
-{ "SPEAKER_00": "Jana Nováková", "SPEAKER_01": "Petr Svoboda", "me": "Zdeněk Zdražil" }
+{ "SPEAKER_00": "Jana Nováková", "SPEAKER_01": "Petr Svoboda", "me": "Jan Novák" }
 ```

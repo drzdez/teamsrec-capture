@@ -56,7 +56,7 @@ devices = "default"          # or explicit WASAPI device names for loopback / mi
 autostart = true             # register in the Startup folder
 
 [user]
-name = "Zdeněk"      # read by teamsrec-transcribe: the mic track of a live recording is this person
+name = "Jan Novák"      # read by teamsrec-transcribe: the mic track of a live recording is this person
 ```
 
 ## Using the prototype today

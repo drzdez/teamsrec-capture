@@ -13,6 +13,7 @@ the companion project [teamsrec-transcribe](https://github.com/drzdez/teamsrec-t
 **No .NET code yet.** What exists:
 
 - `docs/recording-format.md` + `docs/recording.schema.json` — the contract both projects build on.
+- `docs/roadmap.md` — shared plan of both repos: what is done, what comes next, what is still to be decided.
 - `legacy/teamsrec.py` — the working Python prototype this app is a port of. It is usable today,
   see [Using the prototype today](#using-the-prototype-today).
 - `docs/HANDOFF_claudeApp.md` — original design notes.

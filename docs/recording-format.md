@@ -178,6 +178,9 @@ Plánované zdroje:
    zobrazuje galerii v druhém (vyskakovacím) okně – snímá se to okno Teams, ve kterém jsou jmenovky, ne nutně hlavní.
    Minimalizované okno snímat nelze; takové úseky kryje diarizace a hlasové otisky.
 
+Přepis může mít `removed_speakers`: seznam označení, jejichž repliky uživatel smazal jako šum
+(`{"label", "segments", "at"}`); jejich segmenty v přepisu nejsou. Nový přepis (`--force`) je obnoví.
+
 ## Mluvčí z videa `<stem>.speakers_video.json`
 
 Vzniká při `import` záznamu Teams s videem. Teams zvýrazňuje jmenovku aktivního mluvčího; analýza snímků dá pro každé

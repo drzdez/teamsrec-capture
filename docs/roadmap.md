@@ -16,8 +16,9 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
 1. ☐ **Hlasové otisky** (transcribe). Kdo je jednou pojmenován, toho další nahrávky poznají po hlase; vzorky
    ve `_speakers/<osoba>/samples/*.wav`, otisk jen odvozená mezipaměť. Řeší i dva kolegy na jednom připojení.
    Detaily v `recording-format.md`, sekce Zdroje mluvčích.
-2. ◐ **Kontrolní stránka** (transcribe, příkaz `review`). Hotovo 2026-09-11: přehrání ukázek, jména, sloučení,
-   uložení, přegenerování, výběr nahrávky, zástupce na ploše. Chybí záložka Lidé (přijde s hlasovými otisky). Lokální stránka v prohlížeči: přehrát ukázky každého
+2. ☑ **Kontrolní stránka** (transcribe, příkaz `review`). Hotovo 2026-09-11: přehrání ukázek, jména, sloučení,
+   uložení, přegenerování, výběr nahrávky, zástupce na ploše, záložka Lidé (jméno, příjmení, přezdívka, co psát
+   do zápisu). Hlasové vzorky se do záložky doplní s otisky. Lokální stránka v prohlížeči: přehrát ukázky každého
    označení, přiřadit jméno s našeptávačem, sloučit označení, uložit a přegenerovat; záložka Lidé pro správu
    otisků. Jeden soubor HTML + JavaScript s `@ts-check`/JSDoc, bez frameworku a bez build kroku, JSON API
    z Python serveru jen na 127.0.0.1. Součást balíčku teamsrec-transcribe, vlastní složka `web/`, API popsané

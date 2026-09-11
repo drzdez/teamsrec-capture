@@ -178,6 +178,21 @@ překryvem, diarizace slouží jen jako záloha pro segmenty bez překryvu. Jmé
   "speakers": { "Jana Nováková": [[12.0, 15.5], [40.0, 61.5]], "Petr Svoboda": [[15.5, 40.0]] } }
 ```
 
+## Lidé `_speakers/people.json`
+
+Registr osob mimo nahrávky, jeden soubor pro celý `OUT_DIR` (vedle něj budou později hlasové vzorky):
+
+```json
+{ "format": 1, "people": [
+  { "id": "petr-svoboda", "first": "Petr", "last": "Svoboda", "nick": "Péťa", "display": "", "aliases": ["Petr Svoboda (NG)"] }
+] }
+```
+
+`display` = `first` | `full` | `nick` | prázdné (výchozí z konfigurace `[people] display`, výchozí `nick`).
+Režim `nick` bez přezdívky znamená jméno. Přepis i `speakers.json` uchovávají identifikátor osoby (`id`) nebo
+doslovné jméno z videa či mikrofonu; zobrazovaná podoba se určuje až při exportu a zápisu. Neregistrovaná jména se
+tisknou doslova.
+
 ## Mluvčí `<stem>.speakers.json`
 
 Ruční mapování po transkripci. Když existuje, export a summary používají jména místo identifikátorů.

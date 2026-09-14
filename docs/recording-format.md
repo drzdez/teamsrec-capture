@@ -152,6 +152,21 @@ Normalizovaný výstup každého transkripčního providera. Vše za providerem 
   určí z jeho nejdelších úseků, přepis se spustí jednou pro každý přítomný jazyk a segmenty se poskládají podle mluvčího.
   Kořenové `language` je pak jazyk většinový. (Rozhodnutí 2026-09-04, viz teamsrec-transcribe `lab/FINDINGS.md`.)
 
+### Kalendář (od 2026-09-14, volitelné)
+
+S `[calendar] outlook = true` ve sdílené konfiguraci si capture při startu hovoru a transcribe při importu
+vezmou z klasického Outlooku na tomto počítači (COM, lokálně, bez sítě) schůzku běžící v čase začátku
+(začátek −10 min … konec +5 min; přednost má ta, která čas skutečně obsahuje, pak schůzky Teams). Sidecar pak
+má `participants` (jména účastníků) a
+
+```json
+"calendar": {"source": "outlook", "subject": "WFMS sync", "organizer": "Jana Nováková",
+             "start": "2026-09-14T08:30", "end": "2026-09-14T09:15"}
+```
+
+Název schůzky z kalendáře má přednost před titulkem okna Teams. Bez Outlooku (nový Outlook bez COM, jiný stroj)
+se nic nemění.
+
 ### Snímky oken Teams `<stem>_screen<N>.mp4` (živé nahrávky, od 2026-09-14)
 
 Capture během živého hovoru ukládá každé okno Teams jako video se 2 snímky za sekundu (x264, plátno

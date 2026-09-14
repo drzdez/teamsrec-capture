@@ -53,7 +53,8 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
 - ☐ **Jazyk per mluvčí** (v2 kontraktu): smíšené cs/sk schůzky dnes dostanou jeden jazyk pro všechny.
 - ☐ **Mazání zvuku po lhůtě** (`purge-audio`): přepisy a zápisy zůstávají.
 - ☐ **Další přepisové backendy**: CPU fallback, cloud (Azure AI Speech nebo ElevenLabs Scribe).
-- ☐ **Kalendář Outlook** jako zdroj názvu a účastníků schůzky.
+- ☑ **Kalendář Outlook** jako zdroj názvu a účastníků schůzky: 2026-09-14, klasický Outlook přes COM, volitelné
+  (`[calendar] outlook`, dotaz při `config --init`). Graph API zatím ne (registrace aplikace v tenantu).
 
 ## Zásady, které platí pro všechno
 

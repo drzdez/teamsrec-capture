@@ -34,6 +34,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -44,7 +45,7 @@ import winreg
 import winsound
 import tkinter as tk
 from tkinter import simpledialog
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)  # audioop is deprecated but fine on 3.12
@@ -63,25 +64,28 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
-def _config_out_dir() -> Path:
-    """Shared config with teamsrec-transcribe: %APPDATA%/teamsrec/teamsrec.toml [recordings].out_dir."""
+def _config() -> dict:
+    """Shared config with teamsrec-transcribe: %APPDATA%/teamsrec/teamsrec.toml."""
     cfg = Path(os.environ.get("TEAMSREC_CONFIG") or Path(os.environ.get("APPDATA", "")) / "teamsrec" / "teamsrec.toml")
     try:
-        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
-        return Path(data["recordings"]["out_dir"]).expanduser()
-    except (OSError, KeyError, ValueError):
-        return Path(r"D:\meetings")
+        return tomllib.loads(cfg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
-OUT_DIR = _config_out_dir()
+CONFIG = _config()
+OUT_DIR = Path(CONFIG.get("recordings", {}).get("out_dir", r"D:\meetings")).expanduser()
+USE_OUTLOOK = bool(CONFIG.get("calendar", {}).get("outlook", False))  # classic Outlook (COM): title + participants
+PROMPT_DEFAULT = str(CONFIG.get("capture", {}).get("prompt_default", "record"))  # what the prompt does on timeout: record | skip
+USER_NAME = str(CONFIG.get("user", {}).get("name", "")).strip()
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 POLL_S = 3                 # how often to check for a call
-PROMPT_TIMEOUT_S = 45      # prompt auto-skips after this
+PROMPT_TIMEOUT_S = 45      # prompt decides by itself after this (PROMPT_DEFAULT from the config: record | skip)
 MIN_DURATION_S = 5         # shorter recordings are deleted
 MAX_DURATION_S = 4 * 3600  # safety net
 CALL_END_GRACE_S = 10      # call must look ended this long before we stop
@@ -108,7 +112,8 @@ TEAMS_NAV = {"activity", "chat", "teams", "calendar", "calls", "files", "apps", 
              "aktivita", "týmy", "kalendář", "hovory", "soubory", "aplikace", "schůzka"}
 # Titles the meeting window carries before/without a subject (en + cs); a later window title is better
 TEAMS_GENERIC = {"meeting", "join meeting", "meeting compact view", "compact view", "call", "teams-call",
-                 "připojení ke schůzce", "kompaktní zobrazení schůzky", "kompaktní zobrazení", "hovor", "schůzka"}
+                 "připojení ke schůzce", "kompaktní zobrazení schůzky", "kompaktní zobrazení", "hovor", "schůzka",
+                 "ovládací panel sdílení", "sharing control bar", "screen sharing toolbar", "sdílení obsahu"}
 
 
 def is_generic_title(title: str | None) -> bool:
@@ -184,6 +189,65 @@ def teams_window_titles() -> list[str]:
     return [t for _, t in teams_windows()]
 
 
+# ---------------------------------------------------------------- Outlook calendar (classic Outlook, COM, local)
+
+def pick_meeting(items: list[dict], at: datetime, before_s: int = 600, after_s: int = 300) -> dict | None:
+    """The calendar item running at `at` (start - 10 min .. end + 5 min); Teams meetings first, then the one
+    whose start is closest. Pure function over dicts so it can be tested without Outlook."""
+    best = None
+    for it in items:
+        if not (it["start"] - timedelta(seconds=before_s) <= at <= it["end"] + timedelta(seconds=after_s)):
+            continue
+        inside = it["start"] <= at <= it["end"]
+        key = (0 if inside else 1, 0 if it.get("teams") else 1, abs((it["start"] - at).total_seconds()))
+        if best is None or key < best[0]:
+            best = (key, it)
+    return best[1] if best else None
+
+
+def outlook_items(day: datetime) -> list[dict]:
+    """Calendar items of one day from the classic Outlook running on this machine (no network, no consent)."""
+    import pythoncom
+    import win32com.client
+    pythoncom.CoInitialize()
+    try:
+        app = win32com.client.Dispatch("Outlook.Application")
+        cal = app.GetNamespace("MAPI").GetDefaultFolder(9)
+        items = cal.Items
+        items.IncludeRecurrences = True
+        items.Sort("[Start]")
+        flt = f"[Start] >= '{day:%m/%d/%Y} 00:00' AND [Start] <= '{day:%m/%d/%Y} 23:59'"
+        out = []
+        for it in items.Restrict(flt):
+            try:
+                text = f"{it.Location or ''} {it.Body or ''}"
+                out.append({
+                    "subject": (it.Subject or "").strip(),
+                    "start": datetime(it.Start.year, it.Start.month, it.Start.day, it.Start.hour, it.Start.minute),
+                    "end": datetime(it.End.year, it.End.month, it.End.day, it.End.hour, it.End.minute),
+                    "organizer": (it.Organizer or "").strip(),
+                    "attendees": [r.Name for r in it.Recipients if r.Name],
+                    "teams": "teams.microsoft.com" in text.lower(),
+                })
+            except Exception:
+                continue
+        return out
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def outlook_meeting(at: datetime | None = None) -> dict | None:
+    """The meeting from Outlook that is running now (None when Outlook is off, not installed, or nothing runs)."""
+    if not USE_OUTLOOK:
+        return None
+    at = at or datetime.now()
+    try:
+        return pick_meeting(outlook_items(at), at)
+    except Exception as e:  # Outlook not running / new Outlook without COM / no profile
+        log.info("outlook calendar not available: %s", str(e)[:120])
+        return None
+
+
 # ---------------------------------------------------------------- screen capture (Teams windows -> mp4)
 
 def grab_window(hwnd) -> Image.Image | None:
@@ -245,6 +309,7 @@ class ScreenCapture:
         cmd = [self.ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                "-s", f"{SCREEN_W}x{SCREEN_H}", "-r", str(SCREEN_FPS), "-i", "-",
                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-g", str(SCREEN_FPS * 10),
+               "-movflags", "+frag_keyframe+empty_moov+default_base_moof",  # playable even if the app dies mid-call
                str(path)]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -265,10 +330,6 @@ class ScreenCapture:
         self.done.append(sc["meta"])
 
     def _loop(self):
-        try:
-            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))  # per-monitor v2: real pixels
-        except Exception:
-            pass
         period = 1.0 / SCREEN_FPS
         while not self.stop_evt.is_set():
             t0 = time.time()
@@ -318,6 +379,164 @@ class ScreenCapture:
         self.stop_evt.set()
         self.thread.join(timeout=30)
         return [m for m in self.done if m["frames"] > 0]
+
+
+def screen_capture_child(stem: Path, started: datetime) -> None:
+    """Entry point of the separate screen-capture process (`teamsrec.py --screen-capture <stem> <started>`).
+    Runs until the parent closes our stdin (or dies), then writes <stem>_screens.json for the parent."""
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # per-monitor v2: real pixels
+    except Exception:
+        pass
+    ff = _ffmpeg()
+    if not ff:
+        return
+    sc = ScreenCapture(stem, ff, started)
+    sc.start()
+    try:
+        sys.stdin.buffer.read()  # blocks until the parent closes the pipe
+    except Exception:
+        pass
+    screens = sc.stop()
+    Path(f"{stem}_screens.json").write_text(json.dumps(screens, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+class ScreenCaptureProc:
+    """The screen capture as a separate process: whatever happens in there (GDI, WebView2, encoder) cannot
+    take the audio recording down with it."""
+
+    def __init__(self, stem: Path, started: datetime):
+        self.stem = stem
+        exe = Path(sys.executable)
+        pyw = exe.with_name("pythonw.exe") if exe.name.lower() == "python.exe" else exe
+        self.proc = subprocess.Popen([str(pyw), str(Path(__file__).resolve()), "--screen-capture", str(stem),
+                                      started.isoformat()],
+                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        log.info("screen capture process started (pid %d)", self.proc.pid)
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def stop(self) -> list[dict]:
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=45)
+        except Exception:
+            self.proc.kill()
+        meta = Path(f"{self.stem}_screens.json")
+        if meta.exists():
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+            finally:
+                meta.unlink(missing_ok=True)
+            return data
+        log.warning("screen capture process left no metadata (crashed?); videos on disk are kept")
+        return screens_on_disk(self.stem)
+
+
+def screens_on_disk(stem: Path) -> list[dict]:
+    """Fallback metadata for <stem>_screen<N>.mp4 files whose capture process did not report (crash/kill)."""
+    out = []
+    for p in sorted(stem.parent.glob(f"{stem.name}_screen*.mp4")):
+        if p.stat().st_size > 1000:
+            out.append({"file": p.name, "fps": SCREEN_FPS, "width": SCREEN_W, "height": SCREEN_H,
+                        "start_offset_s": 0.0, "titles": [], "frames": -1, "recovered": True})
+    return out
+
+
+# ---------------------------------------------------------------- recovery of recordings cut by a crash
+
+def _repair_wav(path: Path) -> bool:
+    """A killed process never closes the wave file, so the RIFF/data sizes say 0. Fix them from the file size."""
+    try:
+        size = path.stat().st_size
+        if size <= 44:
+            return False
+        with open(path, "r+b") as f:
+            head = f.read(44)
+            if head[:4] != b"RIFF" or head[8:12] != b"WAVE" or head[36:40] != b"data":
+                return False
+            data_size = int.from_bytes(head[40:44], "little")
+            if data_size == size - 44:
+                return True  # already consistent
+            f.seek(4); f.write((size - 8).to_bytes(4, "little"))
+            f.seek(40); f.write((size - 44).to_bytes(4, "little"))
+        return True
+    except OSError:
+        return False
+
+
+def mix_audio(ff: str, stem: Path, audio: list[Path]) -> Path | None:
+    mix = Path(f"{stem}_mix.wav")
+    cmd = [ff, "-y", "-loglevel", "error"]
+    for p in audio:
+        cmd += ["-i", str(p)]
+    cmd += ["-filter_complex", f"amix=inputs={len(audio)}:duration=longest:normalize=0",
+            "-ac", "1", "-ar", "16000", str(mix)]
+    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode:
+        log.error("ffmpeg: %s", r.stderr)
+        return None
+    return mix
+
+
+def recover_orphans(out_dir: Path) -> int:
+    """Recordings that have audio but no sidecar were cut by a crash or a kill: repair the WAV headers, write the
+    sidecar (stop_reason app_crash) and the mix, so nothing recorded is lost. Runs once at startup, so no
+    recording is in progress. Returns how many were recovered."""
+    n = 0
+    for sysfile in sorted(out_dir.glob("[0-9]*/[0-9]*/*/*_sys.wav")):
+        stem = sysfile.with_name(sysfile.name[:-len("_sys.wav")])
+        if Path(f"{stem}.json").exists():
+            continue
+        audio = [p for p in (Path(f"{stem}_sys.wav"), Path(f"{stem}_mic.wav")) if p.exists() and _repair_wav(p)]
+        if not audio:
+            continue
+        try:
+            with wave.open(str(audio[0]), "rb") as w:
+                dur = w.getnframes() / w.getframerate()
+                tracks = {}
+                for p in audio:
+                    with wave.open(str(p), "rb") as t:
+                        tracks["mic" if p.name.endswith("_mic.wav") else "sys"] = {
+                            "file": p.name, "sample_rate": t.getframerate(), "channels": t.getnchannels()}
+        except (wave.Error, OSError) as e:
+            log.warning("orphan %s unreadable: %s", stem.name, e)
+            continue
+        if dur < MIN_DURATION_S:
+            for p in stem.parent.iterdir():
+                p.unlink(missing_ok=True)
+            try:
+                stem.parent.rmdir()
+            except OSError:
+                pass
+            log.info("orphan %s deleted (%.0f s)", stem.name, dur)
+            continue
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})(\d{2})_(.*)", stem.name)
+        started = datetime(*map(int, m.groups()[:5])) if m else datetime.fromtimestamp(sysfile.stat().st_mtime)
+        title = (m.group(6) if m else stem.name).replace("-", " ")
+        ff = _ffmpeg() if MIX_WITH_FFMPEG else None
+        mix = mix_audio(ff, stem, audio) if ff else None
+        meta = {
+            "format": FORMAT_VERSION, "app": APP_NAME, "app_version": APP_VERSION,
+            "title": title, "slug": slug(title), "source": "live",
+            "start": started.isoformat(timespec="seconds"),
+            "end": (started + timedelta(seconds=dur)).isoformat(timespec="seconds"), "duration_s": round(dur),
+            "stop_reason": "app_crash", "recovered": True, "tracks": tracks, "teams_windows_seen": [],
+        }
+        if mix:
+            meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
+        screens = screens_on_disk(stem)
+        if screens:
+            meta["screens"] = screens
+        Path(f"{stem}.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log.warning("recovered orphan recording %s (%.0f s, cut by a crash)", stem.name, dur)
+        n += 1
+    return n
 
 
 def guess_meeting_title(titles: list[str]) -> str | None:
@@ -406,7 +625,7 @@ class Recorder:
 # ---------------------------------------------------------------- prompt
 def prompt(title: str) -> bool:
     """Small always-on-top popup in the top-right corner. Returns True to record."""
-    res = {"ok": False}
+    res = {"ok": PROMPT_DEFAULT == "record"}
     root = tk.Tk()
     root.overrideredirect(True); root.attributes("-topmost", True)
     w, h = 380, 130
@@ -423,7 +642,7 @@ def prompt(title: str) -> bool:
     tk.Label(row, textvariable=cnt, fg="#888", bg="#1f1f1f", font=("Segoe UI", 8)).pack(side="left")
 
     def yes(): res["ok"] = True; root.destroy()
-    def no(): root.destroy()
+    def no(): res["ok"] = False; root.destroy()
     tk.Button(row, text="Skip", width=8, command=no).pack(side="right")
     tk.Button(row, text="● Record", width=10, command=yes, bg="#c0392b", fg="white",
               activebackground="#a93226").pack(side="right", padx=(0, 6))
@@ -434,7 +653,7 @@ def prompt(title: str) -> bool:
         left = int(deadline - time.time())
         if left <= 0:
             root.destroy(); return
-        cnt.set(f"auto-skip in {left}s"); root.after(500, tick)
+        cnt.set(f"{'records' if PROMPT_DEFAULT == 'record' else 'skips'} in {left}s"); root.after(500, tick)
     tick()
     winsound.MessageBeep(winsound.MB_ICONASTERISK)
     root.focus_force(); root.mainloop()
@@ -523,12 +742,14 @@ class App:
                 return
             self.rec, self.title, self.manual, self.playback = rec, title, manual, playback
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
+            self.calendar = None if playback else outlook_meeting(now)
+            if self.calendar and self.calendar.get("subject") and (is_generic_title(title) or not manual):
+                self.title = self.calendar["subject"]
             self.screen = None
             ff = _ffmpeg() if SCREEN_CAPTURE else None
             if ff:
                 try:
-                    self.screen = ScreenCapture(stem, ff, rec.started)
-                    self.screen.start()
+                    self.screen = ScreenCaptureProc(stem, rec.started)
                 except Exception:
                     log.exception("screen capture not started")
                     self.screen = None
@@ -570,18 +791,11 @@ class App:
         mix = None
         audio = [p for p in files if p.suffix.lower() == ".wav"]
         ff = _ffmpeg() if MIX_WITH_FFMPEG else None
-        if ff:
-            mix = Path(f"{stem}_mix.wav")
-            cmd = [ff, "-y", "-loglevel", "error"]
-            for p in audio:
-                cmd += ["-i", str(p)]
-            cmd += ["-filter_complex", f"amix=inputs={len(audio)}:duration=longest:normalize=0",
-                    "-ac", "1", "-ar", "16000", str(mix)]
-            r = subprocess.run(cmd, capture_output=True, text=True)
-            if r.returncode:
-                log.error("ffmpeg: %s", r.stderr); mix = None
+        if ff and audio:
+            mix = mix_audio(ff, stem, audio)
         source = "playback" if self.playback else "manual" if self.manual else "live"
         title = self.title
+        cal = getattr(self, "calendar", None)
         if is_generic_title(title):  # the window got its real subject only later in the call
             better = guess_meeting_title(sorted(self.titles_seen))
             if better:
@@ -598,6 +812,11 @@ class App:
         }
         if mix:
             meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
+        if cal:
+            meta["participants"] = [{"name": n} for n in cal.get("attendees", [])]
+            meta["calendar"] = {"source": "outlook", "subject": cal.get("subject"), "organizer": cal.get("organizer"),
+                                "start": cal["start"].isoformat(timespec="minutes"), "end": cal["end"].isoformat(timespec="minutes")}
+            log.info("calendar: '%s', %d participants", cal.get("subject"), len(cal.get("attendees", [])))
         kept = [m for m in screens if (stem.parent / m["file"]).exists() and (stem.parent / m["file"]).stat().st_size > 0]
         if kept:
             meta["screens"] = kept
@@ -643,6 +862,9 @@ class App:
                     if in_call and not self.declined:
                         time.sleep(2)  # let the meeting window get its title
                         title = guess_meeting_title(teams_window_titles()) or "teams-call"
+                        cal = outlook_meeting()
+                        if cal and cal.get("subject"):
+                            title = cal["subject"]
                         if prompt(title):
                             self.start(title)
                         else:
@@ -672,7 +894,14 @@ def _single_instance() -> bool:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 4 and sys.argv[1] == "--screen-capture":
+        screen_capture_child(Path(sys.argv[2]), datetime.fromisoformat(sys.argv[3]))
+        raise SystemExit(0)
     if not _single_instance():
         log.info("teamsrec is already running, exiting")
         raise SystemExit(0)
+    try:
+        recover_orphans(OUT_DIR)
+    except Exception:
+        log.exception("orphan recovery")
     App().run()

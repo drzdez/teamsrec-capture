@@ -58,6 +58,12 @@ autostart = true             # register in the Startup folder
 
 [user]
 name = "Jan Novák"      # read by teamsrec-transcribe: the mic track of a live recording is this person
+
+[calendar]
+outlook = true               # classic Outlook on this PC (COM, local): meeting title + participants at call start
+
+[capture]
+prompt_default = "record"    # what the "Record?" prompt does when nobody answers within 45 s: record | skip
 ```
 
 ## Using the prototype today

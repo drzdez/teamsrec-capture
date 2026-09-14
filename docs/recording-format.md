@@ -152,6 +152,24 @@ Normalizovaný výstup každého transkripčního providera. Vše za providerem 
   určí z jeho nejdelších úseků, přepis se spustí jednou pro každý přítomný jazyk a segmenty se poskládají podle mluvčího.
   Kořenové `language` je pak jazyk většinový. (Rozhodnutí 2026-09-04, viz teamsrec-transcribe `lab/FINDINGS.md`.)
 
+### Snímky oken Teams `<stem>_screen<N>.mp4` (živé nahrávky, od 2026-09-14)
+
+Capture během živého hovoru ukládá každé okno Teams jako video se 2 snímky za sekundu (x264, plátno
+1600×900 se zachováním poměru stran, černé okraje). Teams má oken víc – hovor, vyskakovací galerie, sdílený
+obsah – a ta vznikají a zanikají během hovoru, proto má každé okno vlastní soubor a v sidecaru položku:
+
+```json
+"screens": [
+  {"file": "<stem>_screen1.mp4", "fps": 2, "width": 1600, "height": 900, "start_offset_s": 0.0,
+   "end_offset_s": 1748.0, "frames": 3496, "titles": ["Připojení ke schůzce | Microsoft Teams", "WFMS sync | Microsoft Teams"]}
+]
+```
+
+`start_offset_s` je posun začátku videa vůči začátku nahrávky. Minimalizované okno nejde sejmout, opakuje se
+poslední snímek, aby časová osa seděla se zvukem. Transcribe každé video projede stejnou analýzou jmenovek jako
+stažený záznam Teams (kandidáti jmen = registr osob + účastníci), osy posune a sloučí do `speakers_video.json`
+se `source: "teams-screen"`.
+
 ### Zdroje mluvčích a jejich priorita
 
 Přepis zvuku je vždy stejný. Liší se jen, odkud se bere „kdo mluví“, a to podle toho, co nahrávka má, ne podle přípony:

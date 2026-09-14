@@ -106,11 +106,11 @@ The prototype uses the Windows default devices; restart it after switching heads
 - Meeting title from the Teams window title; classic Outlook calendar (COM) as a later, better source of title
   and participants
 - Windows only; single-file publish, winget/MSIX later
-- Planned (2026-09-10): capture the Teams window with the participant gallery during a live call as a low-fps video
-  (`<stem>_screen.mp4`), so the active-speaker names come from the same video analysis used for imported Teams
-  recordings. When someone shares their screen, Teams shows the gallery in its pop-out window: the capture follows
-  whichever Teams window shows the name labels. A minimized window cannot be captured; diarization and voice prints
-  cover those stretches.
+- Prototype 0.3.0 (2026-09-14): every Teams window is captured during a live call as a 2 fps video
+  (`<stem>_screen<N>.mp4`, `SCREEN_CAPTURE` in `legacy/teamsrec.py`), so the active-speaker names come from the
+  same label analysis used for imported Teams recordings. Teams uses several windows (meeting, popped-out gallery,
+  shared content); each gets its own file and the analysis merges them. A minimized window cannot be captured (its
+  last frame is repeated); diarization and voice prints cover those stretches. Needs ffmpeg.
 
 ## Consent
 

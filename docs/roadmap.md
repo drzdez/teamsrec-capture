@@ -26,9 +26,10 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
    z Python serveru jen na 127.0.0.1. Součást balíčku teamsrec-transcribe, vlastní složka `web/`, API popsané
    v dokumentaci, aby šlo později vyčlenit nebo nahradit nativním oknem. Zástupce „zpracovat poslední“ ji
    otevře, když zůstane někdo nepojmenovaný.
-3. ☐ **Snímání okna Teams při živé nahrávce** (capture, součást .NET portu). Galerie účastníků ~2 fps jako
-   `<stem>_screen.mp4`, po hovoru stejná analýza jako u stažených záznamů. Při sdílení obrazovky sledovat
-   vyskakovací okno s jmenovkami; minimalizované okno snímat nelze.
+3. ◐ **Snímání oken Teams při živé nahrávce**. 2026-09-14 v Python prototypu: každé okno Teams jako
+   `<stem>_screen<N>.mp4` (2 fps, x264), sidecar `screens`, transcribe analyzuje všechna a sloučí osy.
+   Zbývá: ověřit na reálných hovorech, že zvýraznění jmenovky v živém okně detekuje stejný filtr barvy jako
+   u staženého záznamu (kalibrace v lab/), a přenést do .NET portu.
 4. ☐ **.NET port capture** (WPF + NAudio), viz README capture. Prototyp v Pythonu do té doby slouží.
 
 ## K potvrzení (zatím jen zaznamenáno)

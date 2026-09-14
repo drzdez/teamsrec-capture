@@ -52,16 +52,18 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)  # audioop is dep
 import psutil
 import pyaudiowpatch as pyaudio
 import pystray
+import ctypes
 import win32api
 import win32event
 import win32gui
 import win32process
+import win32ui
 import winerror
 from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -84,6 +86,10 @@ MIN_DURATION_S = 5         # shorter recordings are deleted
 MAX_DURATION_S = 4 * 3600  # safety net
 CALL_END_GRACE_S = 10      # call must look ended this long before we stop
 MIX_WITH_FFMPEG = True
+SCREEN_CAPTURE = True      # record every Teams window as a low-fps video (name labels -> who speaks when)
+SCREEN_FPS = 2
+SCREEN_W, SCREEN_H = 1600, 900   # frames are fitted into this canvas (constant size for the encoder)
+SCREEN_MIN_WIN = (500, 350)      # smaller Teams windows (toasts, popups) are ignored
 
 
 def _ffmpeg() -> str | None:
@@ -157,10 +163,11 @@ def teams_mic_in_use() -> bool:
     return False
 
 
-def teams_window_titles() -> list[str]:
+def teams_windows() -> list[tuple[int, str]]:
+    """(hwnd, title) of every visible top-level Teams window."""
     pids = {p.pid for p in psutil.process_iter(["name"])
             if (p.info["name"] or "").lower() in TEAMS_EXE}
-    titles = []
+    out = []
 
     def cb(hwnd, _):
         if win32gui.IsWindowVisible(hwnd):
@@ -168,9 +175,149 @@ def teams_window_titles() -> list[str]:
             if pid in pids:
                 t = win32gui.GetWindowText(hwnd)
                 if t:
-                    titles.append(t)
+                    out.append((hwnd, t))
     win32gui.EnumWindows(cb, None)
-    return titles
+    return out
+
+
+def teams_window_titles() -> list[str]:
+    return [t for _, t in teams_windows()]
+
+
+# ---------------------------------------------------------------- screen capture (Teams windows -> mp4)
+
+def grab_window(hwnd) -> Image.Image | None:
+    """Screenshot of one window (works when it is covered by other windows, not when minimized)."""
+    if win32gui.IsIconic(hwnd):
+        return None
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    w, h = right - left, bottom - top
+    if w < SCREEN_MIN_WIN[0] or h < SCREEN_MIN_WIN[1]:
+        return None
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+    save_dc = mfc_dc.CreateCompatibleDC()
+    bmp = win32ui.CreateBitmap()
+    try:
+        bmp.CreateCompatibleBitmap(mfc_dc, w, h)
+        save_dc.SelectObject(bmp)
+        ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)  # 2 = PW_RENDERFULLCONTENT (WebView2)
+        if not ok:
+            return None
+        info = bmp.GetInfo()
+        img = Image.frombuffer("RGB", (info["bmWidth"], info["bmHeight"]), bmp.GetBitmapBits(True), "raw", "BGRX", 0, 1)
+        return img
+    finally:
+        win32gui.DeleteObject(bmp.GetHandle())
+        save_dc.DeleteDC(); mfc_dc.DeleteDC()
+        win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+
+def fit_canvas(img: Image.Image) -> Image.Image:
+    """Scale to fit SCREEN_W x SCREEN_H keeping the aspect ratio, black borders (constant frame size)."""
+    scale = min(SCREEN_W / img.width, SCREEN_H / img.height, 1.0)
+    w, h = max(1, int(img.width * scale)), max(1, int(img.height * scale))
+    canvas = Image.new("RGB", (SCREEN_W, SCREEN_H))
+    canvas.paste(img.resize((w, h), Image.BILINEAR), ((SCREEN_W - w) // 2, (SCREEN_H - h) // 2))
+    return canvas
+
+
+class ScreenCapture:
+    """Every Teams window becomes <stem>_screen<N>.mp4 (SCREEN_FPS, x264). Teams uses several windows during a
+    call - the meeting window, a popped-out gallery, shared content - so each gets its own file; the analysis
+    later looks for name labels in all of them. A window that is minimized or briefly fails to render gets its
+    last frame repeated, so the timeline stays aligned with the audio."""
+
+    def __init__(self, stem: Path, ffmpeg: str, started: datetime):
+        self.stem, self.ffmpeg, self.started = stem, ffmpeg, started
+        self.screens: dict[int, dict] = {}  # hwnd -> {proc, meta, last}
+        self.done: list[dict] = []
+        self.n = 0
+        self.stop_evt = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _open(self, hwnd, title):
+        self.n += 1
+        path = Path(f"{self.stem}_screen{self.n}.mp4")
+        cmd = [self.ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", f"{SCREEN_W}x{SCREEN_H}", "-r", str(SCREEN_FPS), "-i", "-",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-g", str(SCREEN_FPS * 10),
+               str(path)]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        meta = {"file": path.name, "fps": SCREEN_FPS, "width": SCREEN_W, "height": SCREEN_H,
+                "start_offset_s": round((datetime.now() - self.started).total_seconds(), 1),
+                "titles": [title], "frames": 0}
+        self.screens[hwnd] = {"proc": proc, "meta": meta, "last": None}
+        log.info("screen capture: %s <- '%s'", path.name, title)
+
+    def _close(self, hwnd):
+        sc = self.screens.pop(hwnd)
+        try:
+            sc["proc"].stdin.close()
+            sc["proc"].wait(timeout=20)
+        except Exception:
+            sc["proc"].kill()
+        sc["meta"]["end_offset_s"] = round((datetime.now() - self.started).total_seconds(), 1)
+        self.done.append(sc["meta"])
+
+    def _loop(self):
+        try:
+            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))  # per-monitor v2: real pixels
+        except Exception:
+            pass
+        period = 1.0 / SCREEN_FPS
+        while not self.stop_evt.is_set():
+            t0 = time.time()
+            try:
+                self._tick()
+            except Exception:
+                log.exception("screen capture")
+            self.stop_evt.wait(max(0.0, period - (time.time() - t0)))
+        for hwnd in list(self.screens):
+            self._close(hwnd)
+
+    def _tick(self):
+        present = {}
+        for hwnd, title in teams_windows():
+            try:
+                l, t, r, b = win32gui.GetWindowRect(hwnd)
+            except Exception:
+                continue
+            if r - l >= SCREEN_MIN_WIN[0] and b - t >= SCREEN_MIN_WIN[1]:
+                present[hwnd] = title
+        for hwnd in list(self.screens):
+            if hwnd not in present and not win32gui.IsWindow(hwnd):
+                self._close(hwnd)  # window closed for good
+        for hwnd, title in present.items():
+            if hwnd not in self.screens:
+                self._open(hwnd, title)
+            sc = self.screens[hwnd]
+            if title not in sc["meta"]["titles"]:
+                sc["meta"]["titles"].append(title)
+        for hwnd, sc in self.screens.items():
+            frame = None
+            try:
+                img = grab_window(hwnd)
+                if img is not None:
+                    frame = fit_canvas(img).tobytes()
+            except Exception:
+                frame = None
+            frame = frame or sc["last"] or bytes(SCREEN_W * SCREEN_H * 3)
+            try:
+                sc["proc"].stdin.write(frame)
+                sc["last"] = frame
+                sc["meta"]["frames"] += 1
+            except (BrokenPipeError, OSError):
+                log.warning("screen capture: encoder for %s died", sc["meta"]["file"])
+
+    def stop(self) -> list[dict]:
+        self.stop_evt.set()
+        self.thread.join(timeout=30)
+        return [m for m in self.done if m["frames"] > 0]
 
 
 def guess_meeting_title(titles: list[str]) -> str | None:
@@ -376,6 +523,17 @@ class App:
                 return
             self.rec, self.title, self.manual, self.playback = rec, title, manual, playback
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
+            self.screen = None
+            ff = _ffmpeg() if SCREEN_CAPTURE else None
+            if ff:
+                try:
+                    self.screen = ScreenCapture(stem, ff, rec.started)
+                    self.screen.start()
+                except Exception:
+                    log.exception("screen capture not started")
+                    self.screen = None
+            elif SCREEN_CAPTURE:
+                log.warning("screen capture needs ffmpeg (not found), recording audio only")
         self._refresh()
         log.info("START '%s' (%s) -> %s", title, "playback" if playback else "manual" if manual else "live", stem)
 
@@ -385,7 +543,11 @@ class App:
                 return
             rec, self.rec = self.rec, None
             dur = rec.stop()
+            sc = getattr(self, "screen", None)
+            screens = sc.stop() if sc else []
+            self.screen = None
             files = [p for p in self.files if p.exists()]
+            files += [rec.stem.parent / m["file"] for m in screens if (rec.stem.parent / m["file"]).exists()]
         self._refresh()
         log.info("STOP (%s) after %.0fs", reason, dur)
         if reason == "aborted" or dur < MIN_DURATION_S:
@@ -398,21 +560,22 @@ class App:
             log.info("deleted (%s)", "aborted" if reason == "aborted" else "too short")
             self.icon.notify("Recording discarded", "teamsrec")
             return
-        threading.Thread(target=self._finalize, args=(rec, files, dur, reason), daemon=True).start()
+        threading.Thread(target=self._finalize, args=(rec, files, dur, reason, screens), daemon=True).start()
 
     STOP_REASONS = {"call ended": "call_ended", "max duration": "max_duration", "tray stop": "user_stop",
                     "silence": "silence", "quit": "app_quit"}
 
-    def _finalize(self, rec, files, dur, reason):
+    def _finalize(self, rec, files, dur, reason, screens=()):
         stem = rec.stem
         mix = None
+        audio = [p for p in files if p.suffix.lower() == ".wav"]
         ff = _ffmpeg() if MIX_WITH_FFMPEG else None
         if ff:
             mix = Path(f"{stem}_mix.wav")
             cmd = [ff, "-y", "-loglevel", "error"]
-            for p in files:
+            for p in audio:
                 cmd += ["-i", str(p)]
-            cmd += ["-filter_complex", f"amix=inputs={len(files)}:duration=longest:normalize=0",
+            cmd += ["-filter_complex", f"amix=inputs={len(audio)}:duration=longest:normalize=0",
                     "-ac", "1", "-ar", "16000", str(mix)]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode:
@@ -435,12 +598,16 @@ class App:
         }
         if mix:
             meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
+        kept = [m for m in screens if (stem.parent / m["file"]).exists() and (stem.parent / m["file"]).stat().st_size > 0]
+        if kept:
+            meta["screens"] = kept
+            log.info("screens: %s", ", ".join(f"{m['file']} ({m['frames']} frames)" for m in kept))
         jpath = Path(f"{stem}.json")  # written last: marks the recording as complete
         jpath.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self.icon.notify(f"Saved {stem.name} ({round(dur / 60)} min)", "teamsrec")
         if POST_HOOK:
             fmt = dict(stem=stem.name, dir=str(stem.parent), json=str(jpath),
-                       sys=str(files[0]) if files else "", mic=str(files[1]) if len(files) > 1 else "",
+                       sys=str(audio[0]) if audio else "", mic=str(audio[1]) if len(audio) > 1 else "",
                        mix=str(mix) if mix else "")
             cmd = POST_HOOK.format(**fmt)
             log.info("post-hook: %s", cmd)

@@ -42,6 +42,13 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
   Klasický instalátor (MSI) ne: objem tvoří modely a CUDA balíčky, které se stahují až na stroji. Jen Windows,
   stejně jako capture; transcribe zůstává v kódu přenositelné, ale bez oficiální podpory jiných OS. Později
   `winget install` pro .NET capture a `uv tool install` pro transcribe. Zaznamenáno 2026-09-11.
+- ☐ **Nahrávání i mimo Teams** (capture): dnes se nahrávání nabídne, jen když si mikrofon vezme Teams
+  (registr ConsentStore + procesy ms-teams.exe). Rozšířit na Zoom, Google Meet a Webex v prohlížeči i jako
+  aplikace, a obecně na cokoli, co začne používat mikrofon: detekce přes ConsentStore (klíč per aplikace, u
+  prohlížeče per web) a seznam známých aplikací s tím, jak z nich vzít název schůzky (titulek okna, záložka).
+  Pro neznámou aplikaci jen dotaz „Nahrát hovor v <aplikace>?“ s ručním názvem. Zdroje jmen mluvčích zůstávají
+  mikrofon, otisky a diarizace; snímání jmenovek z okna (bod 3) je specifické pro Teams, pro ostatní později.
+  Zaznamenáno 2026-09-14.
 - ☐ **Jazyk per mluvčí** (v2 kontraktu): smíšené cs/sk schůzky dnes dostanou jeden jazyk pro všechny.
 - ☐ **Mazání zvuku po lhůtě** (`purge-audio`): přepisy a zápisy zůstávají.
 - ☐ **Další přepisové backendy**: CPU fallback, cloud (Azure AI Speech nebo ElevenLabs Scribe).

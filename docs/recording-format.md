@@ -164,8 +164,13 @@ má `participants` (jména účastníků) a
              "start": "2026-09-14T08:30", "end": "2026-09-14T09:15"}
 ```
 
-Název schůzky z kalendáře má přednost před titulkem okna Teams. Bez Outlooku (nový Outlook bez COM, jiný stroj)
-se nic nemění.
+Spárování: nejdřív podle názvu (titulek okna Teams u živého hovoru, název souboru u importu, shoda s předmětem
+schůzky i přibližná) – `match: "title"`; teprve bez shody podle času – `match: "time"`, což je jen odhad (ad-hoc
+hovor během naplánované schůzky, dvě paralelní schůzky). `status` je `auto` | `confirmed`; kontrolní stránka
+ukazuje panel Schůzka se zdroji (`title_source`: `calendar` | `window` | `manual` | `file`, u účastníků `source`:
+`calendar` | `manual`) a umí spojení potvrdit, odpojit (odebere účastníky z kalendáře, název zůstává) nebo spojit
+s jinou schůzkou (`candidates` v sidecaru, jinak živý dotaz do Outlooku; název, účastníci i složka se přizpůsobí).
+Do zápisu jdou z kalendáře organizátor a plánovaný čas. Bez Outlooku (nový Outlook bez COM, jiný stroj) se nic nemění.
 
 ### Snímky oken Teams `<stem>_screen<N>.mp4` (živé nahrávky, od 2026-09-14)
 
@@ -181,15 +186,20 @@ obsah – a ta vznikají a zanikají během hovoru, proto má každé okno vlast
 ```
 
 `start_offset_s` je posun začátku videa vůči začátku nahrávky. Minimalizované okno nejde sejmout, opakuje se
-poslední snímek, aby časová osa seděla se zvukem. Transcribe každé video projede stejnou analýzou jmenovek jako
-stažený záznam Teams (kandidáti jmen = registr osob + účastníci), osy posune a sloučí do `speakers_video.json`
-se `source: "teams-screen"`.
+poslední snímek, aby časová osa seděla se zvukem. Transcribe každé video okna schůzky (okna s navigací Teams, např. Kalendář, se přeskakují) projede analýzou
+aktivního řečníka: v živém okně dostane mluvící dlaždice tenký rámeček v barvě Teams (na rozdíl od staženého
+záznamu, kde se barví jmenovka), jmenovka se čte OCR z levého dolního rohu dlaždice (kandidáti jmen = registr osob
++ účastníci). Vlastní dlaždice uživatele rámeček nedostává, toho pojmenuje mikrofonní stopa. Osy se posunou a sloučí
+do `speakers_video.json` se `source: "teams-screen"`. Ověřeno 2026-09-16 na živém standupu.
 
 ### Zdroje mluvčích a jejich priorita
 
 Přepis zvuku je vždy stejný. Liší se jen, odkud se bere „kdo mluví“, a to podle toho, co nahrávka má, ne podle přípony:
 
-1. `speakers_video.json` (import záznamu Teams s videem) – segment dostane jméno s největším překryvem.
+1. `speakers_video.json` (záznam Teams s videem nebo snímaná okna) – segment, který zvýraznění přímo pokrývá
+   (≥ 30 % délky), dostane to jméno. Celé diarizační označení se přejmenuje až ve druhém kole, po mikrofonu, a jen
+   když video jednomu jménu připisuje aspoň 10 s, většinu pokrytého času a aspoň čtvrtinu všeho, co označení řeklo
+   (2026-09-16: krátké zvýraznění jinak „vlastnilo“ 47 minut cizí řeči).
 2. Stopa `mic` (živá nahrávka) – diarizační označení, které se kryje s aktivitou mikrofonu, dostane jméno
    uživatele z konfigurace (`[user] name`). Ověřeno 2026-09-10: 89 % aktivity u uživatele, 13–21 % u ostatních.
 3. Diarizace – vždy se spouští, slouží jako záloha pro segmenty bez překryvu a pro účastníky, kteří na videu nejsou.

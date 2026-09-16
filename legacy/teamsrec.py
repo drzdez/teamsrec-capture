@@ -64,7 +64,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.5"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -191,9 +191,34 @@ def teams_window_titles() -> list[str]:
 
 # ---------------------------------------------------------------- Outlook calendar (classic Outlook, COM, local)
 
-def pick_meeting(items: list[dict], at: datetime, before_s: int = 600, after_s: int = 300) -> dict | None:
-    """The calendar item running at `at` (start - 10 min .. end + 5 min); Teams meetings first, then the one
-    whose start is closest. Pure function over dicts so it can be tested without Outlook."""
+def _title_norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def candidates_at(items: list[dict], at: datetime, window_s: int = 3600) -> list[dict]:
+    """Calendar items whose span comes within `window_s` of `at`, closest first (offered on the review page)."""
+    out = [it for it in items if it["start"] - timedelta(seconds=window_s) <= at <= it["end"] + timedelta(seconds=window_s)]
+    return sorted(out, key=lambda it: abs((it["start"] - at).total_seconds()))
+
+
+def pick_meeting(items: list[dict], at: datetime, title: str | None = None,
+                 before_s: int = 600, after_s: int = 300) -> tuple[dict | None, str]:
+    """The calendar item for a call: by the meeting title first (the Teams window / file carries the subject,
+    which settles ad-hoc calls and parallel meetings), else the item running at `at` (start - 10 min .. end +
+    5 min; the one containing `at` first, then Teams meetings, then the closest start). Returns (item, match)
+    with match "title" | "time" | "". Pure function over dicts (testable without Outlook)."""
+    import difflib
+    if title and not is_generic_title(title):
+        t = _title_norm(title)
+        near = candidates_at(items, at, window_s=7200)
+        subjects = [_title_norm(it["subject"]) for it in near]
+        hit = [it for it, s in zip(near, subjects) if s and (s == t or s in t or t in s)]
+        if not hit:
+            close = difflib.get_close_matches(t, [s for s in subjects if s], n=1, cutoff=0.8)
+            hit = [it for it, s in zip(near, subjects) if close and s == close[0]]
+        if hit:
+            return hit[0], "title"
     best = None
     for it in items:
         if not (it["start"] - timedelta(seconds=before_s) <= at <= it["end"] + timedelta(seconds=after_s)):
@@ -202,7 +227,7 @@ def pick_meeting(items: list[dict], at: datetime, before_s: int = 600, after_s: 
         key = (0 if inside else 1, 0 if it.get("teams") else 1, abs((it["start"] - at).total_seconds()))
         if best is None or key < best[0]:
             best = (key, it)
-    return best[1] if best else None
+    return (best[1], "time") if best else (None, "")
 
 
 def outlook_items(day: datetime) -> list[dict]:
@@ -236,16 +261,26 @@ def outlook_items(day: datetime) -> list[dict]:
         pythoncom.CoUninitialize()
 
 
-def outlook_meeting(at: datetime | None = None) -> dict | None:
-    """The meeting from Outlook that is running now (None when Outlook is off, not installed, or nothing runs)."""
+def outlook_meeting(at: datetime | None = None, title: str | None = None) -> dict | None:
+    """The meeting from Outlook for the call starting now (None when Outlook is off, not installed, or nothing
+    matches). The result carries `match` ("title"/"time") and `candidates` (other items nearby) for the review page."""
     if not USE_OUTLOOK:
         return None
     at = at or datetime.now()
     try:
-        return pick_meeting(outlook_items(at), at)
+        items = outlook_items(at)
     except Exception as e:  # Outlook not running / new Outlook without COM / no profile
         log.info("outlook calendar not available: %s", str(e)[:120])
         return None
+    it, match = pick_meeting(items, at, title)
+    if it is None:
+        return None
+    out = dict(it)
+    out["match"] = match
+    out["candidates"] = [{"subject": c["subject"], "start": c["start"].isoformat(timespec="minutes"),
+                          "end": c["end"].isoformat(timespec="minutes"), "teams": c.get("teams", False)}
+                         for c in candidates_at(items, at) if c is not it][:5]
+    return out
 
 
 # ---------------------------------------------------------------- screen capture (Teams windows -> mp4)
@@ -539,17 +574,24 @@ def recover_orphans(out_dir: Path) -> int:
     return n
 
 
-def guess_meeting_title(titles: list[str]) -> str | None:
-    """Meeting windows are titled '<subject> | Microsoft Teams'; skip the main-window nav titles."""
+def guess_titles(titles: list[str]) -> list[str]:
+    """Subjects of meeting windows ('<subject> | Microsoft Teams'), nav/generic titles skipped, in order."""
+    out = []
     for t in titles:
         parts = [p.strip() for p in t.split("|")]
         if len(parts) < 2 or parts[-1].lower() != "microsoft teams":
             continue
         head = parts[0]
-        if is_generic_title(head):
+        if is_generic_title(head) or head.lower() in TEAMS_NAV or head in out:
             continue
-        return head
-    return None
+        out.append(head)
+    return out
+
+
+def guess_meeting_title(titles: list[str]) -> str | None:
+    """The first meeting-window subject, if any."""
+    found = guess_titles(titles)
+    return found[0] if found else None
 
 
 def slug(s: str, n: int = 60) -> str:
@@ -567,8 +609,30 @@ class Recorder:
         self.pa = pyaudio.PyAudio()
         self.streams, self.writers = [], []
         self.tracks: dict[str, dict] = {}   # "sys"/"mic" -> {file, sample_rate, channels}
+        self.queues: dict[str, queue.Queue] = {}   # per track: the writer's input (kept across a device reopen)
+        self.reopens = 0
         self.last_loud = time.time()        # last time the system track was not silent
         self.bytes_received = 0             # watchdog: a sleeping Bluetooth device delivers nothing at all
+        self.last_data = time.time()        # watchdog: last time any stream delivered a buffer
+        self.last_mic_data = None           # watchdog: last time the mic delivered a buffer (None = never)
+        self.last_mic_loud = 0.0            # watchdog: last time the user was audibly speaking
+
+    def _callback(self, name: str, q: queue.Queue):
+        is_sys = name == "sys"
+
+        def cb(data, frames, ti, status):
+            q.put(data)
+            self.bytes_received += len(data)
+            self.last_data = time.time()
+            if not is_sys:
+                self.last_mic_data = self.last_data
+            if audioop.max(data, 2) > SILENCE_LEVEL:
+                if is_sys:
+                    self.last_loud = time.time()
+                else:
+                    self.last_mic_loud = time.time()
+            return (None, pyaudio.paContinue)
+        return cb
 
     def _open(self, dev, suffix, name):
         rate = int(dev["defaultSampleRate"])
@@ -577,36 +641,83 @@ class Recorder:
         wf = wave.open(str(path), "wb")
         wf.setnchannels(ch); wf.setsampwidth(2); wf.setframerate(rate)
         q: queue.Queue = queue.Queue()
-        self.tracks[name] = {"file": path.name, "sample_rate": rate, "channels": ch}
-        is_sys = name == "sys"
+        self.tracks[name] = {"file": path.name, "sample_rate": rate, "channels": ch, "device": dev["name"]}
+        self.queues[name] = q
 
         def writer():
             while (chunk := q.get()) is not None:
                 wf.writeframes(chunk)
             wf.close()
 
-        def cb(data, frames, ti, status):
-            q.put(data)
-            self.bytes_received += len(data)
-            if is_sys and audioop.max(data, 2) > SILENCE_LEVEL:
-                self.last_loud = time.time()
-            return (None, pyaudio.paContinue)
-
         s = self.pa.open(format=pyaudio.paInt16, channels=ch, rate=rate, input=True,
                          input_device_index=dev["index"], frames_per_buffer=1024,
-                         stream_callback=cb)
+                         stream_callback=self._callback(name, q))
         th = threading.Thread(target=writer, daemon=True); th.start()
         self.streams.append(s); self.writers.append((q, th))
         log.info("recording %s  %d Hz x%d  <- %s", path.name, rate, ch, dev["name"])
         return path
 
-    def start(self) -> list[Path]:
-        files = [self._open(self.pa.get_default_wasapi_loopback(), "_sys.wav", "sys")]
+    def _default_devices(self) -> dict[str, dict]:
+        out = {"sys": self.pa.get_default_wasapi_loopback()}
         if self.with_mic:
             try:
                 wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-                mic = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
-                files.append(self._open(mic, "_mic.wav", "mic"))
+                out["mic"] = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
+            except Exception as e:
+                log.warning("no default microphone: %s", e)
+        return out
+
+    def reopen(self) -> bool:
+        """The streams stopped delivering (a Bluetooth headset woke up and Windows re-registered the device, a
+        dongle was re-plugged): open new streams on the current default devices and keep writing into the same
+        files. The gap is padded with silence so the timeline stays aligned with the screen videos."""
+        gap = max(0.0, time.time() - self.last_data)
+        for s in self.streams:
+            try:
+                s.stop_stream(); s.close()
+            except Exception:
+                pass
+        self.streams = []
+        try:
+            self.pa.terminate()
+        except Exception:
+            pass
+        self.pa = pyaudio.PyAudio()  # re-enumerates the devices
+        devs = self._default_devices()
+        ok = 0
+        for name, meta in self.tracks.items():
+            dev = devs.get(name)
+            if dev is None:
+                continue
+            rate, ch = int(dev["defaultSampleRate"]), max(1, min(2, int(dev["maxInputChannels"])))
+            if (rate, ch) != (meta["sample_rate"], meta["channels"]):
+                log.warning("reopen %s: device format %d Hz x%d differs from the file (%d Hz x%d), track stays as is",
+                            name, rate, ch, meta["sample_rate"], meta["channels"])
+                continue
+            q = self.queues[name]
+            if gap > 0.5:
+                q.put(bytes(int(gap * rate) * ch * 2))  # silence for the lost stretch
+            try:
+                s = self.pa.open(format=pyaudio.paInt16, channels=ch, rate=rate, input=True,
+                                 input_device_index=dev["index"], frames_per_buffer=1024,
+                                 stream_callback=self._callback(name, q))
+                s.start_stream()
+                self.streams.append(s)
+                meta["device"] = dev["name"]
+                ok += 1
+                log.info("reopened %s on %s after %.0f s without data", name, dev["name"], gap)
+            except Exception as e:
+                log.warning("reopen %s failed: %s", name, e)
+        self.last_data = time.time()
+        self.reopens += 1
+        return ok > 0
+
+    def start(self) -> list[Path]:
+        devs = self._default_devices()
+        files = [self._open(devs["sys"], "_sys.wav", "sys")]
+        if "mic" in devs:
+            try:
+                files.append(self._open(devs["mic"], "_mic.wav", "mic"))
             except Exception as e:  # no mic is not fatal
                 log.warning("mic not recorded: %s", e)
         for s in self.streams:
@@ -742,9 +853,12 @@ class App:
                 return
             self.rec, self.title, self.manual, self.playback = rec, title, manual, playback
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
-            self.calendar = None if playback else outlook_meeting(now)
+            self.audio_warned = None
+            self.calendar = None if playback else outlook_meeting(now, title)
+            self.title_source = "manual" if manual else ("window" if not is_generic_title(title) else "generic")
             if self.calendar and self.calendar.get("subject") and (is_generic_title(title) or not manual):
                 self.title = self.calendar["subject"]
+                self.title_source = "calendar"
             self.screen = None
             ff = _ffmpeg() if SCREEN_CAPTURE else None
             if ff:
@@ -757,6 +871,45 @@ class App:
                 log.warning("screen capture needs ffmpeg (not found), recording audio only")
         self._refresh()
         log.info("START '%s' (%s) -> %s", title, "playback" if playback else "manual" if manual else "live", stem)
+
+    AUDIO_STALL_S = 20     # no buffer from any device for this long = the device went to sleep / was unplugged
+    AUDIO_SILENT_S = 90    # the system track stays digitally silent this long during a live call = wrong device
+
+    def _audio_watchdog(self, elapsed: float):
+        """Warn loudly (tray + log) when the call audio is not arriving: a Bluetooth headset that fell asleep,
+        or Teams playing through another device than the Windows default we record."""
+        rec = self.rec
+        now = time.time()
+        if not rec or self.playback or elapsed < self.AUDIO_STALL_S + 5:
+            return
+        if elapsed < self.AUDIO_SILENT_S and time.time() - rec.last_data <= self.AUDIO_STALL_S:
+            return
+        stalled = now - rec.last_data > self.AUDIO_STALL_S
+        if stalled and rec.reopens < 20:
+            log.warning("audio watchdog: no data for %.0f s, reopening the streams on the current devices", now - rec.last_data)
+            try:
+                if rec.reopen():
+                    self.icon.notify("Audio device changed – recording continues on the new device.", "teamsrec")
+                    return
+            except Exception:
+                log.exception("reopen")
+        # the others being silent while the user talks (presenting, a monologue) is not a fault
+        silent = now - rec.last_loud > self.AUDIO_SILENT_S and now - rec.last_mic_loud > self.AUDIO_SILENT_S
+        no_mic = rec.with_mic and rec.last_mic_data is None
+        problem = "audio streams stopped (device asleep or unplugged?)" if stalled else \
+            "system audio is silent (Teams playing through another device?)" if silent else \
+            "the microphone never delivered data" if no_mic else None
+        if problem and not getattr(self, "audio_warned", None):
+            self.audio_warned = problem
+            log.warning("audio watchdog: %s", problem)
+            self.icon.notify(f"Recording problem: {problem}. Check the headset / Teams audio device.", "teamsrec")
+            try:
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                pass
+        elif not problem and getattr(self, "audio_warned", None):
+            log.info("audio watchdog: audio is back")
+            self.audio_warned = None
 
     def stop(self, reason):
         with self.lock:
@@ -786,6 +939,42 @@ class App:
     STOP_REASONS = {"call ended": "call_ended", "max duration": "max_duration", "tray stop": "user_stop",
                     "silence": "silence", "quit": "app_quit"}
 
+    def _rematch(self, rec, cal, title, title_source):
+        """At the end of the call the Teams window has carried its real subject for a while. If the calendar
+        link was only guessed by time (or missing), match again by that subject; a different meeting wins
+        (a 10:59 start looked like the 10:30 meeting, but the window said 'Debrief'). Returns (cal, title,
+        title_source, changed)."""
+        seen = [t for t in guess_titles(sorted(self.titles_seen)) if not is_generic_title(t)]
+        if not seen or (cal and cal.get("match") == "title"):
+            return cal, title, title_source, False
+        for window_title in seen:
+            better = outlook_meeting(rec.started, window_title)
+            if better and better.get("match") == "title":
+                if not cal or better.get("subject") != cal.get("subject"):
+                    log.info("calendar re-matched by the window title '%s': '%s' (was '%s')", window_title,
+                             better.get("subject"), cal.get("subject") if cal else None)
+                    return better, better["subject"], "calendar", True
+                return cal, title, title_source, False
+        return cal, title, title_source, False
+
+    @staticmethod
+    def _rename_files(stem: Path, new_title: str) -> Path:
+        """Folder + every <stem>* file get the stem of the new title (same date/time part). Files are closed by
+        now (streams stopped, screen encoders finished)."""
+        new_name = f"{stem.name[:15]}_{slug(new_title)}"  # YYYY-MM-DD_HHMM + new slug
+        if new_name == stem.name:
+            return stem
+        new_dir = stem.parent.with_name(new_name)
+        if new_dir.exists():
+            log.warning("cannot rename to %s: exists", new_name)
+            return stem
+        stem.parent.rename(new_dir)
+        for f in sorted(new_dir.iterdir()):
+            if f.name.startswith(stem.name):
+                f.rename(f.with_name(new_name + f.name[len(stem.name):]))
+        log.info("renamed %s -> %s", stem.name, new_name)
+        return new_dir / new_name
+
     def _finalize(self, rec, files, dur, reason, screens=()):
         stem = rec.stem
         mix = None
@@ -796,27 +985,44 @@ class App:
         source = "playback" if self.playback else "manual" if self.manual else "live"
         title = self.title
         cal = getattr(self, "calendar", None)
+        title_source = getattr(self, "title_source", "generic")
         if is_generic_title(title):  # the window got its real subject only later in the call
             better = guess_meeting_title(sorted(self.titles_seen))
             if better:
                 log.info("title '%s' replaced by '%s' seen during the call", title, better)
                 title = better
+                title_source = "window"
+        cal, title, title_source, changed = self._rematch(rec, cal, title, title_source)
+        if changed or (title_source == "window" and slug(title) != stem.name[17:]):
+            new_stem = self._rename_files(stem, title)
+            if new_stem != stem:
+                files = [new_stem.parent / (new_stem.name + p.name[len(stem.name):]) for p in files]
+                for m in screens:
+                    m["file"] = new_stem.name + m["file"][len(stem.name):]
+                for t in rec.tracks.values():
+                    t["file"] = new_stem.name + t["file"][len(stem.name):]
+                stem = rec.stem = new_stem
+                audio = [p for p in files if p.suffix.lower() == ".wav"]
+                mix = Path(f"{stem}_mix.wav") if mix else None  # the mix file was renamed with the rest
         meta = {
             "format": FORMAT_VERSION, "app": APP_NAME, "app_version": APP_VERSION,
             "title": title, "slug": slug(title), "source": source,
             "start": rec.started.isoformat(timespec="seconds"),
             "end": datetime.now().isoformat(timespec="seconds"), "duration_s": round(dur),
             "stop_reason": self.STOP_REASONS.get(reason, "user_stop"),
+            "title_source": title_source,
+            "audio_reopens": rec.reopens,
             "tracks": {k: v for k, v in rec.tracks.items() if (stem.parent / v["file"]).exists()},
             "teams_windows_seen": sorted(self.titles_seen),
         }
         if mix:
             meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
         if cal:
-            meta["participants"] = [{"name": n} for n in cal.get("attendees", [])]
+            meta["participants"] = [{"name": n, "source": "calendar"} for n in cal.get("attendees", [])]
             meta["calendar"] = {"source": "outlook", "subject": cal.get("subject"), "organizer": cal.get("organizer"),
-                                "start": cal["start"].isoformat(timespec="minutes"), "end": cal["end"].isoformat(timespec="minutes")}
-            log.info("calendar: '%s', %d participants", cal.get("subject"), len(cal.get("attendees", [])))
+                                "start": cal["start"].isoformat(timespec="minutes"), "end": cal["end"].isoformat(timespec="minutes"),
+                                "match": cal.get("match", "time"), "status": "auto", "candidates": cal.get("candidates", [])}
+            log.info("calendar: '%s' (by %s), %d participants", cal.get("subject"), cal.get("match"), len(cal.get("attendees", [])))
         kept = [m for m in screens if (stem.parent / m["file"]).exists() and (stem.parent / m["file"]).stat().st_size > 0]
         if kept:
             meta["screens"] = kept
@@ -845,6 +1051,7 @@ class App:
                         self.no_audio_warned = True
                         log.warning("no audio data from the default devices after 10 s (headset off? wrong default device?)")
                         self.icon.notify("No audio is arriving from the default devices. Headset off?", "teamsrec")
+                    self._audio_watchdog(elapsed)
                     if elapsed > MAX_DURATION_S:
                         self.stop("max duration")
                     elif self.playback:
@@ -862,7 +1069,7 @@ class App:
                     if in_call and not self.declined:
                         time.sleep(2)  # let the meeting window get its title
                         title = guess_meeting_title(teams_window_titles()) or "teams-call"
-                        cal = outlook_meeting()
+                        cal = outlook_meeting(None, title)
                         if cal and cal.get("subject"):
                             title = cal["subject"]
                         if prompt(title):

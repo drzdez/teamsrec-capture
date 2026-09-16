@@ -64,7 +64,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.5.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -85,7 +85,7 @@ USER_NAME = str(CONFIG.get("user", {}).get("name", "")).strip()
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 POLL_S = 3                 # how often to check for a call
-PROMPT_TIMEOUT_S = 45      # prompt decides by itself after this (PROMPT_DEFAULT from the config: record | skip)
+PROMPT_TIMEOUT_S = 45      # the "discard?" box closes by itself after this (PROMPT_DEFAULT: record = keep | skip = discard)
 MIN_DURATION_S = 5         # shorter recordings are deleted
 MAX_DURATION_S = 4 * 3600  # safety net
 CALL_END_GRACE_S = 10      # call must look ended this long before we stop
@@ -771,6 +771,29 @@ def prompt(title: str) -> bool:
     return res["ok"]
 
 
+def ask_discard(title: str, timeout_s: int = PROMPT_TIMEOUT_S) -> bool:
+    """Recording has already started; ask whether to throw it away. Native Windows message box with a timeout
+    (no Tk in this process). Returns True = discard. Default (Enter / timeout) = keep, unless PROMPT_DEFAULT is
+    "skip"."""
+    MB_YESNO, MB_ICONQUESTION, MB_DEFBUTTON2, MB_SETFOREGROUND, MB_TOPMOST = 0x4, 0x20, 0x100, 0x10000, 0x40000
+    IDYES = 6
+    flags = MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST | (0 if PROMPT_DEFAULT == "skip" else MB_DEFBUTTON2)
+    text = (f"Nahrávám: {title}\n\nZahodit tuto nahrávku?\n"
+            f"Ano = nenahrávat a smazat, Ne = nechat nahrávat (za {timeout_s} s automaticky "
+            f"{'zahodit' if PROMPT_DEFAULT == 'skip' else 'nechat'}).")
+    try:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        r = ctypes.windll.user32.MessageBoxTimeoutW(None, text, "teamsrec", flags, 0, int(timeout_s * 1000))
+    except Exception:
+        log.exception("discard box")
+        return False
+    if r == IDYES:
+        return True
+    if r == 7:  # IDNO
+        return False
+    return PROMPT_DEFAULT == "skip"  # 32000 = timed out
+
+
 # ---------------------------------------------------------------- app
 def icon_image(color):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -910,6 +933,16 @@ class App:
         elif not problem and getattr(self, "audio_warned", None):
             log.info("audio watchdog: audio is back")
             self.audio_warned = None
+
+    def _ask_discard(self, rec, title):
+        """Runs beside the recording; only a clear "Ano" discards it."""
+        if ask_discard(title):
+            with self.lock:
+                same = self.rec is rec
+            if same:
+                log.info("discarded '%s' on request", title)
+                self.declined = True
+                self.stop("aborted")
 
     def stop(self, reason):
         with self.lock:
@@ -1067,16 +1100,15 @@ class App:
                     self._refresh()
                 else:
                     if in_call and not self.declined:
-                        time.sleep(2)  # let the meeting window get its title
                         title = guess_meeting_title(teams_window_titles()) or "teams-call"
                         cal = outlook_meeting(None, title)
                         if cal and cal.get("subject"):
                             title = cal["subject"]
-                        if prompt(title):
-                            self.start(title)
+                        self.start(title)  # first record, then ask: the box must never cost the opening minutes
+                        if self.rec:
+                            threading.Thread(target=self._ask_discard, args=(self.rec, title), daemon=True).start()
                         else:
-                            self.declined = True
-                            log.info("skipped '%s'", title)
+                            self.declined = True  # start failed (logged); do not retry until the call ends
                     elif not in_call:
                         self.declined = False
             except Exception:

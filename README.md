@@ -63,7 +63,7 @@ name = "Jan Novák"      # read by teamsrec-transcribe: the mic track of a live 
 outlook = true               # classic Outlook on this PC (COM, local): meeting title + participants at call start
 
 [capture]
-prompt_default = "record"    # what the "Record?" prompt does when nobody answers within 45 s: record | skip
+prompt_default = "record"    # a call is recorded from its first second; the "discard?" box (45 s) then keeps (record) or drops (skip) it when nobody answers
 ```
 
 ## Using the prototype today

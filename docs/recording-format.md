@@ -78,12 +78,12 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 | `app`, `app_version` | string | ano | kdo nahrávku pořídil |
 | `title` | string | ano | název schůzky (z okna Teams, kalendáře, nebo zadaný ručně) |
 | `slug` | string | ano | slug použitý ve jménech souborů |
-| `source` | enum | ano | `live` = hovor v Teams, `playback` = přehrávání uloženého záznamu, `manual` = ruční nahrávání bez detekce, `import` = externí soubor (např. záznam schůzky stažený z Teams) |
+| `source` | enum | ano | `live` = hovor v Teams, `playback` = přehrávání uloženého záznamu, `manual` = ruční nahrávání bez detekce, `import` = externí soubor (např. záznam schůzky stažený z Teams), `onsite` = schůzka na místě z jednoho mikrofonu (jen stopa `mic`, na ní jsou všichni, uživatel se z ní nepojmenovává; jména z otisků a diarizace) |
 | `start`, `end` | ISO 8601 lokální čas bez zóny | ano | začátek a konec nahrávání |
 | `duration_s` | int | ano | délka v sekundách |
 | `stop_reason` | enum | ano | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `n/a` (u `import`) |
 | `language` | BCP‑47 | ne | očekávaný jazyk schůzky, výchozí `cs` |
-| `tracks.sys` | track | ne* | loopback; u `playback` a `manual` jediná stopa; u `import` chybí (*povinné pro vše kromě `import`) |
+| `tracks.sys` | track | ne* | loopback; u `playback` a `manual` jediná stopa; u `import` a `onsite` chybí (*povinné pro vše kromě `import` a `onsite`) |
 | `tracks.mic` | track | ne | mikrofon = uživatel; chybí u `playback` |
 | `mix` | track | ne | mono 16 kHz součet všech stop, vstup pro cloudové ASR; chybí, když mix selhal; u `import` jediná a povinná stopa |
 | `origin_file` | string | ne | jen `import`: původní název souboru, ze kterého nahrávka vznikla |

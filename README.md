@@ -63,7 +63,9 @@ name = "Jan Novák"      # read by teamsrec-transcribe: the mic track of a live 
 outlook = true               # classic Outlook on this PC (COM, local): meeting title + participants at call start
 
 [capture]
-prompt_default = "record"    # a call is recorded from its first second; the "discard?" box (45 s) then keeps (record) or drops (skip) it when nobody answers
+onsite_mic = "Pole mikrofonu"  # on-site meetings (tray: Record on-site meeting): part of the input device name; empty = default input
+prompt_default = "record"    # a call is recorded from its first second; record = only a tray notification (discard via the tray menu),
+                             # ask = a "discard?" box that keeps the recording after 45 s, skip = the box discards it after 45 s
 ```
 
 ## Using the prototype today

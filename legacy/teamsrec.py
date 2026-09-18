@@ -64,7 +64,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -80,8 +80,9 @@ def _config() -> dict:
 CONFIG = _config()
 OUT_DIR = Path(CONFIG.get("recordings", {}).get("out_dir", r"D:\meetings")).expanduser()
 USE_OUTLOOK = bool(CONFIG.get("calendar", {}).get("outlook", False))  # classic Outlook (COM): title + participants
-PROMPT_DEFAULT = str(CONFIG.get("capture", {}).get("prompt_default", "record"))  # what the prompt does on timeout: record | skip
+PROMPT_DEFAULT = str(CONFIG.get("capture", {}).get("prompt_default", "record"))  # record = just notify | ask = show the discard box | skip = box, discards on timeout
 USER_NAME = str(CONFIG.get("user", {}).get("name", "")).strip()
+ONSITE_MIC = str(CONFIG.get("capture", {}).get("onsite_mic", "")).strip()  # part of the input device name for on-site meetings
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 POLL_S = 3                 # how often to check for a call
@@ -602,9 +603,11 @@ def slug(s: str, n: int = 60) -> str:
 
 # ---------------------------------------------------------------- recorder
 class Recorder:
-    def __init__(self, stem: Path, with_mic: bool = True):
+    def __init__(self, stem: Path, with_mic: bool = True, mic_only: bool = False, mic_name: str = ""):
         self.stem = stem
         self.with_mic = with_mic
+        self.mic_only = mic_only      # on-site meeting: the room microphone carries everybody, no loopback track
+        self.mic_name = mic_name      # preferred input device (substring of its name), else the default input
         self.started = datetime.now()
         self.pa = pyaudio.PyAudio()
         self.streams, self.writers = [], []
@@ -657,14 +660,28 @@ class Recorder:
         log.info("recording %s  %d Hz x%d  <- %s", path.name, rate, ch, dev["name"])
         return path
 
+    def _find_input(self, name_part: str) -> dict | None:
+        """An active WASAPI input device whose name contains name_part (case-insensitive)."""
+        wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        for i in range(wasapi["deviceCount"]):
+            dev = self.pa.get_device_info_by_host_api_device_index(wasapi["index"], i)
+            if dev["maxInputChannels"] > 0 and name_part.lower() in dev["name"].lower() and not dev.get("isLoopbackDevice"):
+                return dev
+        return None
+
     def _default_devices(self) -> dict[str, dict]:
-        out = {"sys": self.pa.get_default_wasapi_loopback()}
+        out = {} if self.mic_only else {"sys": self.pa.get_default_wasapi_loopback()}
         if self.with_mic:
             try:
-                wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-                out["mic"] = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
+                dev = self._find_input(self.mic_name) if self.mic_name else None
+                if self.mic_name and dev is None:
+                    log.warning("input device '%s' not found or not active, using the default input", self.mic_name)
+                if dev is None:
+                    wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+                    dev = self.pa.get_device_info_by_index(wasapi["defaultInputDevice"])
+                out["mic"] = dev
             except Exception as e:
-                log.warning("no default microphone: %s", e)
+                log.warning("no microphone: %s", e)
         return out
 
     def reopen(self) -> bool:
@@ -714,7 +731,7 @@ class Recorder:
 
     def start(self) -> list[Path]:
         devs = self._default_devices()
-        files = [self._open(devs["sys"], "_sys.wav", "sys")]
+        files = [self._open(devs["sys"], "_sys.wav", "sys")] if "sys" in devs else []
         if "mic" in devs:
             try:
                 files.append(self._open(devs["mic"], "_mic.wav", "mic"))
@@ -822,6 +839,8 @@ class App:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Record now (manual)", lambda: self.start("manual", manual=True),
                              enabled=lambda _: self.rec is None),
+            pystray.MenuItem("Record on-site meeting (microphone only)", self.start_onsite,
+                             enabled=lambda _: not self.rec),
             pystray.MenuItem("Record playback (system audio only)", self.start_playback,
                              enabled=lambda _: self.rec is None),
             pystray.MenuItem("Stop & keep", lambda: self.stop("tray stop"),
@@ -859,7 +878,17 @@ class App:
                 self.start(title, manual=True, playback=True)
         threading.Thread(target=ask, daemon=True).start()
 
-    def start(self, title, manual=False, playback=False):
+    def start_onsite(self):
+        """On-site meeting: only the room microphone (laptop array or whatever `onsite_mic` names), no Teams,
+        no loopback, no window capture. Title and participants from the calendar when a meeting is running."""
+        cal = outlook_meeting()
+        title = cal["subject"] if cal and cal.get("subject") else "onsite"
+        self.start(title, manual=True, onsite=True)
+        if self.rec:
+            self.icon.notify(f"Nahrávám na místě: {title} (mikrofon {self.rec.tracks.get('mic', {}).get('device', '?')}). "
+                             f"Ukončete přes Stop & keep.", "teamsrec")
+
+    def start(self, title, manual=False, playback=False, onsite=False):
         with self.lock:
             if self.rec:
                 return
@@ -868,13 +897,13 @@ class App:
             stem = OUT_DIR / f"{now:%Y}" / f"{now:%m}" / name / name
             stem.parent.mkdir(parents=True, exist_ok=True)
             try:
-                rec = Recorder(stem, with_mic=not playback)
+                rec = Recorder(stem, with_mic=not playback, mic_only=onsite, mic_name=ONSITE_MIC if onsite else "")
                 self.files = rec.start()
             except Exception as e:
                 log.exception("start failed")
                 self.icon.notify(f"Recording failed: {e}", "teamsrec")
                 return
-            self.rec, self.title, self.manual, self.playback = rec, title, manual, playback
+            self.rec, self.title, self.manual, self.playback, self.onsite = rec, title, manual, playback, onsite
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
             self.audio_warned = None
             self.calendar = None if playback else outlook_meeting(now, title)
@@ -883,7 +912,7 @@ class App:
                 self.title = self.calendar["subject"]
                 self.title_source = "calendar"
             self.screen = None
-            ff = _ffmpeg() if SCREEN_CAPTURE else None
+            ff = _ffmpeg() if SCREEN_CAPTURE and not onsite else None
             if ff:
                 try:
                     self.screen = ScreenCaptureProc(stem, rec.started)
@@ -906,6 +935,14 @@ class App:
         if not rec or self.playback or elapsed < self.AUDIO_STALL_S + 5:
             return
         if elapsed < self.AUDIO_SILENT_S and time.time() - rec.last_data <= self.AUDIO_STALL_S:
+            return
+        if rec.mic_only:
+            if now - rec.last_data > self.AUDIO_STALL_S and rec.reopens < 20:
+                log.warning("audio watchdog: microphone silent (no data) for %.0f s, reopening", now - rec.last_data)
+                try:
+                    rec.reopen()
+                except Exception:
+                    log.exception("reopen")
             return
         stalled = now - rec.last_data > self.AUDIO_STALL_S
         if stalled and rec.reopens < 20:
@@ -1015,7 +1052,7 @@ class App:
         ff = _ffmpeg() if MIX_WITH_FFMPEG else None
         if ff and audio:
             mix = mix_audio(ff, stem, audio)
-        source = "playback" if self.playback else "manual" if self.manual else "live"
+        source = "onsite" if getattr(self, "onsite", False) else "playback" if self.playback else "manual" if self.manual else "live"
         title = self.title
         cal = getattr(self, "calendar", None)
         title_source = getattr(self, "title_source", "generic")
@@ -1090,6 +1127,8 @@ class App:
                     elif self.playback:
                         if elapsed > 15 and time.time() - self.rec.last_loud >= SILENCE_STOP_S:
                             self.stop("silence")
+                    elif getattr(self, "onsite", False):
+                        pass  # ends only via the tray (Stop & keep) or the safety cap
                     elif not self.manual:
                         if in_call:
                             self.call_missing_since = None
@@ -1104,9 +1143,12 @@ class App:
                         cal = outlook_meeting(None, title)
                         if cal and cal.get("subject"):
                             title = cal["subject"]
-                        self.start(title)  # first record, then ask: the box must never cost the opening minutes
+                        self.start(title)  # record first; nothing to click, the tray menu can still discard it
                         if self.rec:
-                            threading.Thread(target=self._ask_discard, args=(self.rec, title), daemon=True).start()
+                            if PROMPT_DEFAULT == "ask":
+                                threading.Thread(target=self._ask_discard, args=(self.rec, title), daemon=True).start()
+                            else:
+                                self.icon.notify(f"Nahrávám: {title}. Zahodit lze z menu ikony v liště (Abort & delete).", "teamsrec")
                         else:
                             self.declined = True  # start failed (logged); do not retry until the call ends
                     elif not in_call:

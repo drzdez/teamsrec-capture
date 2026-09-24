@@ -81,7 +81,8 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 | `source` | enum | ano | `live` = hovor v Teams, `playback` = přehrávání uloženého záznamu, `manual` = ruční nahrávání bez detekce, `import` = externí soubor (např. záznam schůzky stažený z Teams), `onsite` = schůzka na místě z jednoho mikrofonu (jen stopa `mic`, na ní jsou všichni, uživatel se z ní nepojmenovává; jména z otisků a diarizace) |
 | `start`, `end` | ISO 8601 lokální čas bez zóny | ano | začátek a konec nahrávání |
 | `duration_s` | int | ano | délka v sekundách |
-| `stop_reason` | enum | ano | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `n/a` (u `import`) |
+| `stop_reason` | enum | ano | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `onsite_upgraded` (schůzka na místě přešla do Teams), `n/a` (u `import`) |
+| `continues` | string | ne | stem předchozí části: živá nahrávka navazuje na nahrávku na místě, která přešla do hovoru v Teams |
 | `language` | BCP‑47 | ne | očekávaný jazyk schůzky, výchozí `cs` |
 | `tracks.sys` | track | ne* | loopback; u `playback` a `manual` jediná stopa; u `import` a `onsite` chybí (*povinné pro vše kromě `import` a `onsite`) |
 | `tracks.mic` | track | ne | mikrofon = uživatel; chybí u `playback` |

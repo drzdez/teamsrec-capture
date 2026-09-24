@@ -31,6 +31,22 @@ Start it once (or let it autostart at login) and forget about it. It sits in the
 4. Files land in one folder per recording, `<OUT_DIR>/YYYY/MM/<stem>/`, as `<stem>_sys.wav`, `_mic.wav`,
    `_mix.wav` + `<stem>.json` sidecar (stem = `<date>_<time>_<title-slug>`).
 
+Everything above is in the tray menu under **Settings…**, which opens a local page (127.0.0.1, one HTML file
+next to the script) with the microphone picker — the list comes from the devices Windows offers right now, and
+microphones that exist but are disabled or unplugged are shown with the reason, so a wrong name cannot be typed
+in. **Test microphone** records two seconds and reports the peak, so a room can be checked before the meeting
+starts. The settings are written back into the shared TOML, keeping its comments, and take effect immediately
+(except `out_dir`).
+
+Meetings that are not in Teams:
+
+- **Record on-site meeting** (tray) — the room microphone only, no loopback, no window capture.
+- With `onsite_offer`, a meeting from the Outlook calendar starts an on-site recording by itself: recording
+  begins at the meeting's start time and a *discard?* box appears, so nothing of the beginning is lost. With
+  `calendar` only meetings without a Teams link are taken (those are recorded by the normal call detection).
+- With `onsite_upgrade`, an on-site meeting that turns out to be online (Teams takes the microphone) is finished
+  and continues as a live recording; the live sidecar points back with `continues`.
+
 Manual modes in the tray menu:
 
 - **Record now** — record without detection (any call, any app).
@@ -66,6 +82,9 @@ outlook = true               # classic Outlook on this PC (COM, local): meeting 
 
 [capture]
 onsite_mic = "Pole mikrofonu"  # on-site meetings (tray: Record on-site meeting): part of the input device name; empty = default input
+device_missing = "ask"       # that microphone is not available: ask (offer another one) | fail | fallback (default input)
+onsite_offer = "never"       # record a calendar meeting on site: never | calendar (only meetings without a Teams link) | always
+onsite_upgrade = true        # an on-site meeting that turns into a Teams call continues as a live recording
 prompt_default = "record"    # a call is recorded from its first second; record = only a tray notification (discard via the tray menu),
                              # ask = a "discard?" box that keeps the recording after 45 s, skip = the box discards it after 45 s
 ```
@@ -89,6 +108,13 @@ winget install Gyan.FFmpeg        # enables the _mix.wav (found automatically in
 
 Run: double-click `legacy/run_teamsrec.cmd` (no console) or `run_teamsrec_console.cmd` (shows errors).
 Log: `<OUT_DIR>/teamsrec.log`.
+
+Smoke tests (no tray, no Teams, throw-away config; the parts that have gone wrong on real meetings):
+
+```
+.venv\Scripts\python.exe smoke_test.py              # join screen, watchdog backoff, no device, on-site flows, settings API
+.venv\Scripts\python.exe smoke_test.py --hardware   # also records 2 s from the configured microphone
+```
 
 Autostart at login: put a shortcut to `legacy/run_teamsrec.cmd` into the Startup folder (Win+R -> `shell:startup`),
 window style *Minimized*. Or from PowerShell:

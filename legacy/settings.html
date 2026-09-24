@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>teamsrec — nastavení</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f25; --line: #2b2f37; --fg: #e8eaed; --dim: #9aa0aa;
+    --accent: #5b8def; --ok: #2ecc71; --warn: #f1c40f; --err: #e74c3c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 16px 18px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: var(--accent); }
+  .field { margin-bottom: 16px; }
+  .field:last-child { margin-bottom: 0; }
+  label.name { display: block; margin-bottom: 4px; }
+  .hint { color: var(--dim); font-size: 13px; margin-top: 4px; }
+  select, input[type=text] { width: 100%; padding: 7px 9px; background: #111316; color: var(--fg);
+            border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  select:disabled, input:disabled { color: var(--dim); }
+  .radios { display: flex; flex-direction: column; gap: 6px; }
+  .radios label, .check label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+  .radios input, .check input { margin-top: 4px; }
+  button { padding: 7px 14px; background: #262a32; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 6px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 24px);
+         padding-top: 24px; display: flex; gap: 12px; align-items: center; }
+  .msg { font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  ul.devices { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; color: var(--dim); }
+  ul.devices li { padding: 2px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>teamsrec — nastavení</h1>
+  <div class="sub" id="head">načítám…</div>
+
+  <section>
+    <h2>Schůzka na místě (bez Teams)</h2>
+    <div class="field">
+      <label class="name" for="mic">Mikrofon</label>
+      <select id="mic"></select>
+      <div class="hint">Nahrává se z prvního zařízení, jehož název obsahuje tento text. V zasedačce
+        použijte mikrofonní pole notebooku, ne sluchátka — ta slyší jen vás.</div>
+      <div class="row" style="margin-top:10px">
+        <button id="test">Test mikrofonu (2 s)</button>
+        <span class="msg" id="testmsg"></span>
+      </div>
+      <ul class="devices" id="unavailable"></ul>
+    </div>
+    <div class="field">
+      <label class="name">Když zvolený mikrofon chybí</label>
+      <div class="radios" id="device_missing">
+        <label><input type="radio" name="device_missing" value="ask"><span>Zeptat se, čím nahrávat (nabídne dostupná zařízení)</span></label>
+        <label><input type="radio" name="device_missing" value="fail"><span>Nenahrávat a nahlásit chybu</span></label>
+        <label><input type="radio" name="device_missing" value="fallback"><span>Tiše použít výchozí vstup Windows</span></label>
+      </div>
+    </div>
+    <div class="field">
+      <label class="name">Nabízet nahrávání podle kalendáře</label>
+      <div class="radios" id="onsite_offer">
+        <label><input type="radio" name="onsite_offer" value="never"><span>Nikdy — on-site nahrávání spouštím sám z menu ikony</span></label>
+        <label><input type="radio" name="onsite_offer" value="calendar"><span>U schůzek bez odkazu na Teams (pravděpodobně na místě)</span></label>
+        <label><input type="radio" name="onsite_offer" value="always"><span>U každé schůzky v kalendáři</span></label>
+      </div>
+      <div class="hint">Nahrávání se spustí hned na začátku schůzky a zobrazí se okénko „Zahodit?“ —
+        když neodpovíte, nahrávka se zachová. Vyžaduje zapnutý kalendář Outlook níže.</div>
+    </div>
+    <div class="field check">
+      <label><input type="checkbox" id="onsite_upgrade">
+        <span>Když během nahrávání na místě začne hovor v Teams, přejít na živý záznam
+          <span class="hint" style="display:block">On-site nahrávka se ukončí a hned začne živá (zvuk systému + mikrofon);
+            v sidecaru se obě propojí polem <code>continues</code>.</span></span></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hovory v Teams</h2>
+    <div class="field">
+      <label class="name">Na začátku hovoru</label>
+      <div class="radios" id="prompt_default">
+        <label><input type="radio" name="prompt_default" value="record"><span>Nahrávat a jen oznámit (zahodit lze z menu ikony)</span></label>
+        <label><input type="radio" name="prompt_default" value="ask"><span>Nahrávat a zeptat se „Zahodit?“ — bez odpovědi zachovat</span></label>
+        <label><input type="radio" name="prompt_default" value="skip"><span>Nahrávat a zeptat se „Zahodit?“ — bez odpovědi zahodit</span></label>
+      </div>
+      <div class="hint">Nahrává se vždy od první vteřiny; volba mění jen to, jak se aplikace ptá.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Ostatní</h2>
+    <div class="field">
+      <label class="name" for="user_name">Vaše jméno</label>
+      <input type="text" id="user_name" placeholder="Jan Novák">
+      <div class="hint">Mikrofonní stopa živého hovoru dostane toto jméno.</div>
+    </div>
+    <div class="field check">
+      <label><input type="checkbox" id="calendar_outlook">
+        <span>Brát název a účastníky schůzky z Outlooku (klasický Outlook na tomto počítači, přes COM)</span></label>
+    </div>
+    <div class="field">
+      <label class="name" for="out_dir">Složka nahrávek</label>
+      <input type="text" id="out_dir" disabled>
+      <div class="hint">Sdílená s teamsrec-transcribe; mění se v <code>%APPDATA%\teamsrec\teamsrec.toml</code>
+        a projeví se po restartu obou aplikací.</div>
+    </div>
+  </section>
+
+  <div class="bar">
+    <button class="primary" id="save">Uložit</button>
+    <button id="reload">Načíst znovu</button>
+    <button id="sound">Otevřít nastavení zvuku Windows</button>
+    <span class="msg" id="status"></span>
+  </div>
+</main>
+<script>
+// @ts-check
+"use strict";
+
+/** @typedef {{name: string, channels: number, rate: number, is_default: boolean}} Device */
+/** @typedef {{name: string, device: string, reason: string}} Missing */
+
+/** @type {any} */
+let state = null;
+
+/** @param {string} id */
+const el = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
+/** @param {string} id */
+const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
+
+/** @param {string} name @param {string} value */
+function setRadio(name, value) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((r) => {
+    const radio = /** @type {HTMLInputElement} */ (r);
+    radio.checked = radio.value === value;
+  });
+}
+
+/** @param {string} name @returns {string} */
+function getRadio(name) {
+  const hit = /** @type {HTMLInputElement | null} */ (document.querySelector(`input[name="${name}"]:checked`));
+  return hit ? hit.value : "";
+}
+
+/** @param {string} text @param {string} cls */
+function status(text, cls) {
+  const s = el("status");
+  s.textContent = text;
+  s.className = "msg " + (cls || "");
+}
+
+async function load() {
+  const r = await fetch("/api/settings");
+  state = await r.json();
+  const v = state.values;
+
+  el("head").textContent = `teamsrec ${state.version} · ${state.recording ? "právě nahrává" : "čeká na hovor"}`
+    + ` · konfigurace ${state.config_path}`;
+
+  // microphone: active devices, plus the configured one when it is not here right now
+  const mic = /** @type {HTMLSelectElement} */ (el("mic"));
+  mic.innerHTML = "";
+  const add = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; mic.appendChild(o);
+  };
+  add("", "Výchozí vstup Windows");
+  for (const d of /** @type {Device[]} */ (state.devices)) {
+    add(d.name, `${d.name} — ${d.channels} kan., ${Math.round(d.rate / 1000)} kHz${d.is_default ? " (výchozí)" : ""}`);
+  }
+  const known = state.devices.some((/** @type {Device} */ d) => d.name.toLowerCase().includes(String(v.onsite_mic).toLowerCase()));
+  if (v.onsite_mic && !known) add(v.onsite_mic, `${v.onsite_mic} — teď nedostupné`);
+  mic.value = v.onsite_mic || "";
+
+  const ul = el("unavailable");
+  ul.innerHTML = "";
+  for (const m of /** @type {Missing[]} */ (state.unavailable)) {
+    const li = document.createElement("li");
+    li.textContent = `• ${m.name} (${m.device}) — ${m.reason}`;
+    ul.appendChild(li);
+  }
+
+  setRadio("device_missing", v.device_missing);
+  setRadio("onsite_offer", v.onsite_offer);
+  setRadio("prompt_default", v.prompt_default);
+  input("onsite_upgrade").checked = !!v.onsite_upgrade;
+  input("calendar_outlook").checked = !!v.calendar_outlook;
+  input("user_name").value = v.user_name || "";
+  input("out_dir").value = state.out_dir;
+  status("", "");
+}
+
+async function save() {
+  const values = {
+    onsite_mic: /** @type {HTMLSelectElement} */ (el("mic")).value,
+    device_missing: getRadio("device_missing"),
+    onsite_offer: getRadio("onsite_offer"),
+    prompt_default: getRadio("prompt_default"),
+    onsite_upgrade: input("onsite_upgrade").checked,
+    calendar_outlook: input("calendar_outlook").checked,
+    user_name: input("user_name").value.trim(),
+  };
+  status("ukládám…", "");
+  const r = await fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values }),
+  });
+  const res = await r.json();
+  if (res.error) return status(res.error, "err");
+  status("Uloženo, platí hned.", "ok");
+}
+
+async function testMic() {
+  const btn = /** @type {HTMLButtonElement} */ (el("test"));
+  const msg = el("testmsg");
+  btn.disabled = true;
+  msg.textContent = "nahrávám 2 s…";
+  msg.className = "msg";
+  try {
+    const r = await fetch("/api/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device: /** @type {HTMLSelectElement} */ (el("mic")).value }),
+    });
+    const res = await r.json();
+    if (res.error) { msg.textContent = res.error; msg.className = "msg err"; return; }
+    const loud = res.peak >= res.silence_level;
+    msg.textContent = `${res.device}: ${loud ? "slyší" : "TICHO"} (špička ${res.peak}, práh ${res.silence_level})`;
+    msg.className = "msg " + (loud ? "ok" : "warn");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+el("save").addEventListener("click", save);
+el("test").addEventListener("click", testMic);
+el("reload").addEventListener("click", () => {
+  status("načítám…", "");
+  load().catch((e) => status(String(e), "err"));
+});
+el("sound").addEventListener("click", async () => {
+  await fetch("/api/sound-panel", { method: "POST" });
+  status("Otevřel jsem Zvuk → karta Záznam. Po povolení zařízení dejte Načíst znovu.", "");
+});
+load().catch((e) => status(String(e), "err"));
+</script>
+</body>
+</html>

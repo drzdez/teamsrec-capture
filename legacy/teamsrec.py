@@ -41,9 +41,11 @@ import tomllib
 import unicodedata
 import warnings
 import wave
+import webbrowser
 import winreg
 import winsound
 import tkinter as tk
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tkinter import simpledialog
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,15 +66,18 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.8.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
+
+
+CONFIG_PATH = Path(os.environ.get("TEAMSREC_CONFIG")
+                   or Path(os.environ.get("APPDATA", "")) / "teamsrec" / "teamsrec.toml")
 
 
 def _config() -> dict:
     """Shared config with teamsrec-transcribe: %APPDATA%/teamsrec/teamsrec.toml."""
-    cfg = Path(os.environ.get("TEAMSREC_CONFIG") or Path(os.environ.get("APPDATA", "")) / "teamsrec" / "teamsrec.toml")
     try:
-        return tomllib.loads(cfg.read_text(encoding="utf-8"))
+        return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -83,6 +88,9 @@ USE_OUTLOOK = bool(CONFIG.get("calendar", {}).get("outlook", False))  # classic 
 PROMPT_DEFAULT = str(CONFIG.get("capture", {}).get("prompt_default", "record"))  # record = just notify | ask = show the discard box | skip = box, discards on timeout
 USER_NAME = str(CONFIG.get("user", {}).get("name", "")).strip()
 ONSITE_MIC = str(CONFIG.get("capture", {}).get("onsite_mic", "")).strip()  # part of the input device name for on-site meetings
+DEVICE_MISSING = str(CONFIG.get("capture", {}).get("device_missing", "ask"))   # ask | fail | fallback
+ONSITE_OFFER = str(CONFIG.get("capture", {}).get("onsite_offer", "never"))     # never | calendar | always
+ONSITE_UPGRADE = bool(CONFIG.get("capture", {}).get("onsite_upgrade", True))   # on-site meeting that turns into a Teams call
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 POLL_S = 3                 # how often to check for a call
@@ -95,6 +103,205 @@ SCREEN_CAPTURE = True      # record every Teams window as a low-fps video (name 
 SCREEN_FPS = 2
 SCREEN_W, SCREEN_H = 1600, 900   # frames are fitted into this canvas (constant size for the encoder)
 SCREEN_MIN_WIN = (500, 350)      # smaller Teams windows (toasts, popups) are ignored
+
+
+# ---------------------------------------------------------------- audio devices (settings page + on-site start)
+MMDEV_CAPTURE = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture"
+_PROP_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"   # endpoint name, e.g. "Pole mikrofonu"
+_PROP_DEVICE = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6"  # the hardware behind it
+
+
+def audio_inputs() -> list[dict]:
+    """WASAPI devices we can record from right now (loopbacks excluded)."""
+    out: list[dict] = []
+    pa = pyaudio.PyAudio()
+    try:
+        w = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        default = w.get("defaultInputDevice", -1)
+        for i in range(w["deviceCount"]):
+            d = pa.get_device_info_by_host_api_device_index(w["index"], i)
+            if d["maxInputChannels"] > 0 and not d.get("isLoopbackDevice"):
+                out.append({"name": d["name"], "channels": int(d["maxInputChannels"]),
+                            "rate": int(d["defaultSampleRate"]), "is_default": d["index"] == default})
+    except Exception:
+        log.exception("input device list")
+    finally:
+        pa.terminate()
+    return out
+
+
+def _state_reason(state: int) -> str:
+    if state & 0x10000000:
+        return "zakázané ve Windows"
+    return {1: "aktivní", 2: "zakázané", 4: "není přítomné", 8: "odpojené"}.get(state, f"stav {state}")
+
+
+def unavailable_inputs() -> list[dict]:
+    """Microphones Windows knows but cannot record from (disabled, unplugged), so the settings page can say
+    why the expected device is not in the list. Read-only, from the MMDevices registry."""
+    out: list[dict] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MMDEV_CAPTURE) as root:
+            for guid in _subkeys(root):
+                try:
+                    with winreg.OpenKey(root, guid) as k:
+                        state = int(winreg.QueryValueEx(k, "DeviceState")[0])
+                    if state == 1:
+                        continue
+                    with winreg.OpenKey(root, guid + r"\Properties") as pk:
+                        name = str(winreg.QueryValueEx(pk, _PROP_NAME)[0])
+                        device = str(winreg.QueryValueEx(pk, _PROP_DEVICE)[0])
+                except OSError:
+                    continue
+                out.append({"name": name, "device": device, "reason": _state_reason(state)})
+    except OSError as e:
+        log.warning("registry read failed: %s", e)
+    return out
+
+
+def find_input(pa, name_part: str) -> dict | None:
+    """An active WASAPI input whose name contains name_part; the Windows default input when it is empty."""
+    w = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+    for i in range(w["deviceCount"]):
+        d = pa.get_device_info_by_host_api_device_index(w["index"], i)
+        if d["maxInputChannels"] > 0 and not d.get("isLoopbackDevice"):
+            if name_part and name_part.lower() in d["name"].lower():
+                return d
+    if name_part:
+        return None
+    try:
+        return pa.get_device_info_by_index(w["defaultInputDevice"])
+    except Exception:
+        return None
+
+
+def test_input(name_part: str, seconds: float = 2.0) -> dict:
+    """Open a microphone the way a recording would and report how loud it is."""
+    pa = pyaudio.PyAudio()
+    try:
+        dev = find_input(pa, name_part)
+        if dev is None:
+            return {"error": f"zařízení „{name_part or 'výchozí vstup'}“ není k dispozici"}
+        rate, ch = int(dev["defaultSampleRate"]), max(1, min(2, int(dev["maxInputChannels"])))
+        s = pa.open(format=pyaudio.paInt16, channels=ch, rate=rate, input=True,
+                    input_device_index=dev["index"], frames_per_buffer=1024)
+        peak, end = 0, time.time() + seconds
+        while time.time() < end:
+            peak = max(peak, audioop.max(s.read(1024, exception_on_overflow=False), 2))
+        s.stop_stream(); s.close()
+        log.info("microphone test: %s peak %d", dev["name"], peak)
+        return {"device": dev["name"], "peak": peak, "seconds": seconds, "silence_level": SILENCE_LEVEL}
+    except Exception as e:
+        log.exception("microphone test")
+        return {"error": f"test selhal: {e}"}
+    finally:
+        pa.terminate()
+
+
+# ---------------------------------------------------------------- settings (shared TOML, edited in place)
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _trailing_comment(rest: str) -> str:
+    """The comment after a value, so rewriting a key keeps the explanation next to it."""
+    start = 0
+    if rest.startswith('"'):
+        end = rest.find('"', 1)
+        if end < 0:
+            return ""
+        start = end + 1
+    at = rest.find("#", start)
+    return "  " + rest[at:].strip() if at >= 0 else ""
+
+
+def config_set(changes: dict[str, dict]) -> None:
+    """Write keys into the shared TOML in place, keeping comments, order and every key we do not manage."""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines = CONFIG_PATH.read_text(encoding="utf-8").splitlines() if CONFIG_PATH.exists() else []
+    todo = {(sec, key): value for sec, kv in changes.items() for key, value in kv.items()}
+    section, last_of = "", {}
+    for i, line in enumerate(lines):
+        head = re.match(r"\s*\[([^\]]+)\]", line)
+        if head:
+            section = head.group(1).strip()
+            last_of[section] = i
+            continue
+        if section and line.strip():
+            last_of[section] = i
+        km = re.match(r"(\s*)([A-Za-z0-9_-]+)(\s*=\s*)(.*)$", line)
+        if km and (section, km.group(2)) in todo:
+            value = todo.pop((section, km.group(2)))
+            lines[i] = f"{km.group(1)}{km.group(2)}{km.group(3)}{_toml_value(value)}{_trailing_comment(km.group(4))}"
+    for (sec, key), value in list(todo.items()):
+        line = f"{key} = {_toml_value(value)}"
+        if sec in last_of:
+            at = last_of[sec] + 1
+            lines.insert(at, line)
+            for other, idx in last_of.items():
+                if idx >= at:
+                    last_of[other] = idx + 1
+            last_of[sec] = at
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines += [f"[{sec}]", line]
+            last_of[sec] = len(lines) - 1
+    CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# page field -> (TOML section, key, allowed values or type)
+SETTINGS_MAP = {
+    "onsite_mic": ("capture", "onsite_mic", str),
+    "device_missing": ("capture", "device_missing", ("ask", "fail", "fallback")),
+    "onsite_offer": ("capture", "onsite_offer", ("never", "calendar", "always")),
+    "onsite_upgrade": ("capture", "onsite_upgrade", bool),
+    "prompt_default": ("capture", "prompt_default", ("record", "ask", "skip")),
+    "calendar_outlook": ("calendar", "outlook", bool),
+    "user_name": ("user", "name", str),
+}
+
+
+def settings_values() -> dict:
+    return {"onsite_mic": ONSITE_MIC, "device_missing": DEVICE_MISSING, "onsite_offer": ONSITE_OFFER,
+            "onsite_upgrade": ONSITE_UPGRADE, "prompt_default": PROMPT_DEFAULT,
+            "calendar_outlook": USE_OUTLOOK, "user_name": USER_NAME}
+
+
+def save_settings(values: dict) -> list[str]:
+    """Validate the page's values, write them to the TOML and make them take effect right away."""
+    global ONSITE_MIC, DEVICE_MISSING, ONSITE_OFFER, ONSITE_UPGRADE, PROMPT_DEFAULT, USE_OUTLOOK, USER_NAME, CONFIG
+    changes: dict[str, dict] = {}
+    clean: dict = {}
+    for field, (sec, key, kind) in SETTINGS_MAP.items():
+        if field not in values:
+            continue
+        value = values[field]
+        if kind is bool:
+            value = bool(value)
+        elif kind is str:
+            value = str(value).strip()
+        elif value not in kind:
+            raise ValueError(f"{field}: neznámá hodnota {value!r}")
+        clean[field] = value
+        changes.setdefault(sec, {})[key] = value
+    if not changes:
+        return []
+    config_set(changes)
+    ONSITE_MIC = clean.get("onsite_mic", ONSITE_MIC)
+    DEVICE_MISSING = clean.get("device_missing", DEVICE_MISSING)
+    ONSITE_OFFER = clean.get("onsite_offer", ONSITE_OFFER)
+    ONSITE_UPGRADE = clean.get("onsite_upgrade", ONSITE_UPGRADE)
+    PROMPT_DEFAULT = clean.get("prompt_default", PROMPT_DEFAULT)
+    USE_OUTLOOK = clean.get("calendar_outlook", USE_OUTLOOK)
+    USER_NAME = clean.get("user_name", USER_NAME)
+    CONFIG = _config()
+    log.info("settings saved: %s", ", ".join(sorted(clean)))
+    return sorted(clean)
 
 
 def _ffmpeg() -> str | None:
@@ -697,20 +904,11 @@ class Recorder:
         log.info("recording %s  %d Hz x%d  <- %s", path.name, rate, ch, dev["name"])
         return path
 
-    def _find_input(self, name_part: str) -> dict | None:
-        """An active WASAPI input device whose name contains name_part (case-insensitive)."""
-        wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-        for i in range(wasapi["deviceCount"]):
-            dev = self.pa.get_device_info_by_host_api_device_index(wasapi["index"], i)
-            if dev["maxInputChannels"] > 0 and name_part.lower() in dev["name"].lower() and not dev.get("isLoopbackDevice"):
-                return dev
-        return None
-
     def _default_devices(self) -> dict[str, dict]:
         out = {} if self.mic_only else {"sys": self.pa.get_default_wasapi_loopback()}
         if self.with_mic:
             try:
-                dev = self._find_input(self.mic_name) if self.mic_name else None
+                dev = find_input(self.pa, self.mic_name) if self.mic_name else None
                 if self.mic_name and dev is None:
                     log.warning("input device '%s' not found or not active, using the default input", self.mic_name)
                 if dev is None:
@@ -862,6 +1060,80 @@ def ask_discard(title: str, timeout_s: int = PROMPT_TIMEOUT_S) -> bool:
     return PROMPT_DEFAULT == "skip"  # 32000 = timed out
 
 
+def ask_yes_no(text: str, title: str = "teamsrec", timeout_s: int = 60, default_yes: bool = False) -> bool:
+    """Native Yes/No box with a timeout (no Tk in this process). On timeout the default wins."""
+    MB_YESNO, MB_ICONQUESTION, MB_DEFBUTTON2, MB_SETFOREGROUND, MB_TOPMOST = 0x4, 0x20, 0x100, 0x10000, 0x40000
+    flags = MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST | (0 if default_yes else MB_DEFBUTTON2)
+    try:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        r = ctypes.windll.user32.MessageBoxTimeoutW(None, text, title, flags, 0, int(timeout_s * 1000))
+    except Exception:
+        log.exception("yes/no box")
+        return default_yes
+    return r == 6 if r in (6, 7) else default_yes  # 6 = IDYES, 7 = IDNO, 32000 = timed out
+
+
+# ---------------------------------------------------------------- settings page (browser, 127.0.0.1 only)
+SETTINGS_PAGE = Path(__file__).with_name("settings.html")
+
+
+def settings_state(app) -> dict:
+    return {"version": APP_VERSION, "config_path": str(CONFIG_PATH), "out_dir": str(OUT_DIR),
+            "recording": bool(app and app.rec), "values": settings_values(),
+            "devices": audio_inputs(), "unavailable": unavailable_inputs()}
+
+
+class SettingsHandler(BaseHTTPRequestHandler):
+    """The page is one file next to this script; everything else is a small JSON API."""
+    app = None
+
+    def log_message(self, fmt, *args):
+        pass  # the app has its own log
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/api/settings"):
+            return self._json(settings_state(self.app))
+        if self.path.split("?")[0] in ("/", "/index.html", "/settings.html"):
+            try:
+                body = SETTINGS_PAGE.read_bytes()
+            except OSError as e:
+                return self._json({"error": f"settings.html: {e}"}, 500)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        try:
+            data = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        except ValueError:
+            return self._json({"error": "nečitelný požadavek"}, 400)
+        if self.path == "/api/settings":
+            try:
+                return self._json({"ok": True, "applied": save_settings(data.get("values") or {})})
+            except (ValueError, OSError) as e:
+                return self._json({"error": f"uložení selhalo: {e}"}, 400)
+        if self.path == "/api/test":
+            if self.app and self.app.rec:
+                return self._json({"error": "právě běží nahrávání, test mikrofonu teď nejde"})
+            return self._json(test_input(str(data.get("device") or "")))
+        if self.path == "/api/sound-panel":
+            subprocess.Popen("control mmsys.cpl", shell=True)
+            return self._json({"ok": True})
+        self.send_error(404)
+
+
 # ---------------------------------------------------------------- app
 def icon_image(color):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -884,6 +1156,10 @@ class App:
         self.declined = False
         self.call_missing_since = None
         self.prejoin_since = None           # Teams sits on the join screen: the call has not started yet
+        self.settings = None                # the settings HTTP server, started when the tray item is used
+        self.offered: set[str] = set()      # calendar meetings already offered, so they are offered once
+        self.offer_checked_at = 0.0
+        self.continues = None               # stem of the on-site recording this live one took over from
         self.reopen_at = None               # when the last stream reopen happened (waiting for its verdict)
         self.reopen_tries = 0               # failed reopens in a row -> longer backoff
         self.next_reopen_at = 0.0
@@ -894,7 +1170,7 @@ class App:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Record now (manual)", lambda: self.start("manual", manual=True),
                              enabled=lambda _: self.rec is None),
-            pystray.MenuItem("Record on-site meeting (microphone only)", self.start_onsite,
+            pystray.MenuItem("Record on-site meeting (microphone only)", lambda: self.start_onsite(),
                              enabled=lambda _: not self.rec),
             pystray.MenuItem("Record playback (system audio only)", self.start_playback,
                              enabled=lambda _: self.rec is None),
@@ -902,6 +1178,9 @@ class App:
                              enabled=lambda _: self.rec is not None),
             pystray.MenuItem("Abort & delete", lambda: self.stop("aborted"),
                              enabled=lambda _: self.rec is not None),
+            pystray.MenuItem("Test microphone", lambda: self.test_microphone(),
+                             enabled=lambda _: self.rec is None),
+            pystray.MenuItem("Settings…", lambda: self.open_settings()),
             pystray.MenuItem("Open folder", lambda: subprocess.Popen(["explorer", str(OUT_DIR)])),
             pystray.MenuItem("Quit", self.exit),
         ))
@@ -923,6 +1202,31 @@ class App:
         self.icon.title = self.status()
         self.icon.update_menu()
 
+    def open_settings(self):
+        """Start the local settings server on first use and open the page in the browser."""
+        try:
+            if self.settings is None:
+                SettingsHandler.app = self
+                self.settings = ThreadingHTTPServer(("127.0.0.1", 0), SettingsHandler)
+                threading.Thread(target=self.settings.serve_forever, daemon=True).start()
+                log.info("settings page on http://127.0.0.1:%d/", self.settings.server_port)
+            webbrowser.open(f"http://127.0.0.1:{self.settings.server_port}/")
+        except Exception as e:
+            log.exception("settings page")
+            self.icon.notify(f"Nastavení se nepodařilo otevřít: {e}", "teamsrec")
+
+    def test_microphone(self):
+        """Two seconds from the configured microphone, so a room can be checked before the meeting starts."""
+        def run():
+            res = test_input(ONSITE_MIC)
+            if res.get("error"):
+                self.icon.notify(res["error"], "teamsrec")
+                return
+            loud = res["peak"] >= res["silence_level"]
+            self.icon.notify(f"{res['device']}: {'slyší' if loud else 'TICHO'} "
+                             f"(špička {res['peak']}, práh {res['silence_level']})", "teamsrec")
+        threading.Thread(target=run, daemon=True).start()
+
     def start_playback(self):
         """Record what is being played (a stored Teams recording): system track only, stops on silence."""
         def ask():
@@ -938,18 +1242,87 @@ class App:
                 self.start(title, manual=True, playback=True)
         threading.Thread(target=ask, daemon=True).start()
 
-    def start_onsite(self):
-        """On-site meeting: only the room microphone (laptop array or whatever `onsite_mic` names), no Teams,
-        no loopback, no window capture. Title and participants from the calendar when a meeting is running."""
-        cal = outlook_meeting()
-        title = cal["subject"] if cal and cal.get("subject") else "onsite"
-        self.start(title, manual=True, onsite=True)
-        if self.rec:
-            dev = self.rec.tracks.get("mic", {}).get("device", "?")
-            log.info("on-site recording from '%s'", dev)
-            self.icon.notify(f"Nahrávám na místě: {title} (mikrofon {dev}). Ukončete přes Stop & keep.", "teamsrec")
+    def _onsite_device(self) -> str | None:
+        """Which microphone to record the room with, following `device_missing`. Returns a name fragment
+        ("" = the Windows default input), or None when the recording must not start."""
+        ins = audio_inputs()
+        if not ins:
+            missing = ", ".join(f"{d['name']} ({d['reason']})" for d in unavailable_inputs()) or "žádné"
+            log.error("on-site: no active input device (known: %s)", missing)
+            self.icon.notify(f"Nahrávání na místě nelze spustit: není žádný aktivní mikrofon. "
+                             f"Windows zná: {missing}.", "teamsrec")
+            try:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            except Exception:
+                pass
+            return None
+        if not ONSITE_MIC or any(ONSITE_MIC.lower() in d["name"].lower() for d in ins):
+            return ONSITE_MIC
+        alt = next((d["name"] for d in ins if d["is_default"]), ins[0]["name"])
+        if DEVICE_MISSING == "fallback":
+            log.warning("on-site: '%s' is not available, using '%s'", ONSITE_MIC, alt)
+            return alt
+        if DEVICE_MISSING == "fail":
+            log.error("on-site: '%s' is not available, not recording", ONSITE_MIC)
+            self.icon.notify(f"Mikrofon „{ONSITE_MIC}“ není k dispozici, nenahrávám. "
+                             f"Dostupné: {', '.join(d['name'] for d in ins)}.", "teamsrec")
+            return None
+        if ask_yes_no(f"Mikrofon „{ONSITE_MIC}“ není k dispozici.\n\nNahrávat z „{alt}“?\n"
+                      f"(Pozor: sluchátka slyší jen vás, ne místnost.)"):
+            return alt
+        log.info("on-site: declined the replacement device")
+        return None
 
-    def start(self, title, manual=False, playback=False, onsite=False):
+    def start_onsite(self, title: str | None = None, ask: bool = False):
+        """On-site meeting: only the room microphone (laptop array or whatever `onsite_mic` names), no Teams,
+        no loopback, no window capture. Title and participants from the calendar when a meeting is running.
+        Runs in a thread: it may have to ask about the microphone."""
+        threading.Thread(target=self._start_onsite, args=(title, ask), daemon=True).start()
+
+    def _start_onsite(self, title: str | None = None, ask: bool = False):
+        if self.rec:
+            return
+        mic = self._onsite_device()
+        if mic is None:
+            return
+        if title is None:
+            cal = outlook_meeting()
+            title = cal["subject"] if cal and cal.get("subject") else "onsite"
+        self.start(title, manual=True, onsite=True, mic=mic)
+        if not self.rec:
+            return
+        dev = self.rec.tracks.get("mic", {}).get("device", "?")
+        log.info("on-site recording from '%s'", dev)
+        self.icon.notify(f"Nahrávám na místě: {title} (mikrofon {dev}). Ukončete přes Stop & keep.", "teamsrec")
+        if ask:
+            threading.Thread(target=self._ask_discard, args=(self.rec, title), daemon=True).start()
+
+    def _calendar_offer(self):
+        """A meeting from the calendar started and Teams is not in a call: record the room. `onsite_offer`
+        decides whether that happens for every meeting or only for those without a Teams link."""
+        now = time.time()
+        if now - self.offer_checked_at < 30:
+            return
+        self.offer_checked_at = now
+        m = outlook_meeting()
+        if not m or not m.get("subject"):
+            return
+        key = f"{m['start']:%Y-%m-%dT%H:%M}|{m['subject']}"
+        if key in self.offered:
+            return
+        if ONSITE_OFFER == "calendar" and m.get("teams"):
+            self.offered.add(key)  # an online meeting: the Teams detection records it when the call starts
+            return
+        since = (datetime.now() - m["start"]).total_seconds()
+        if not 0 <= since <= self.OFFER_WINDOW_S:
+            return
+        self.offered.add(key)
+        log.info("calendar: '%s' started %.0f s ago, recording it on site", m["subject"], since)
+        self._start_onsite(m["subject"], ask=True)
+
+    OFFER_WINDOW_S = 240   # a calendar meeting is offered from its start until this long after it
+
+    def start(self, title, manual=False, playback=False, onsite=False, mic=None):
         with self.lock:
             if self.rec:
                 return
@@ -958,7 +1331,8 @@ class App:
             stem = OUT_DIR / f"{now:%Y}" / f"{now:%m}" / name / name
             stem.parent.mkdir(parents=True, exist_ok=True)
             try:
-                rec = Recorder(stem, with_mic=not playback, mic_only=onsite, mic_name=ONSITE_MIC if onsite else "")
+                mic_name = (ONSITE_MIC if mic is None else mic) if onsite else ""
+                rec = Recorder(stem, with_mic=not playback, mic_only=onsite, mic_name=mic_name)
                 self.files = rec.start()
             except Exception as e:
                 log.exception("start failed")
@@ -975,7 +1349,7 @@ class App:
             self.rec, self.title, self.manual, self.playback, self.onsite = rec, title, manual, playback, onsite
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
             self.audio_warned, self.audio_warned_at = None, 0.0
-            self.prejoin_since = None
+            self.prejoin_since, self.continues = None, None
             self.reopen_at, self.reopen_tries, self.next_reopen_at = None, 0, 0.0
             self.calendar = None if playback else outlook_meeting(now, title)
             self.title_source = "manual" if manual else ("window" if not is_generic_title(title) else "generic")
@@ -1096,6 +1470,13 @@ class App:
             self.screen = None
             files = [p for p in self.files if p.exists()]
             files += [rec.stem.parent / m["file"] for m in screens if (rec.stem.parent / m["file"]).exists()]
+            info = {  # what THIS recording was: the next one may start before the sidecar is written
+                "title": self.title, "cal": getattr(self, "calendar", None),
+                "title_source": getattr(self, "title_source", "generic"),
+                "titles_seen": set(self.titles_seen), "continues": self.continues,
+                "source": "onsite" if getattr(self, "onsite", False) else "playback" if self.playback
+                else "manual" if self.manual else "live",
+            }
         self._refresh()
         log.info("STOP (%s) after %.0fs", reason, dur)
         if not any(p.suffix.lower() == ".wav" for p in files):  # the devices vanished: nothing was ever written
@@ -1123,17 +1504,32 @@ class App:
             log.info("deleted (%s)", "aborted" if reason == "aborted" else "too short")
             self.icon.notify("Recording discarded", "teamsrec")
             return
-        threading.Thread(target=self._finalize, args=(rec, files, dur, reason, screens), daemon=True).start()
+        threading.Thread(target=self._finalize, args=(rec, files, dur, reason, screens, info), daemon=True).start()
 
     STOP_REASONS = {"call ended": "call_ended", "max duration": "max_duration", "tray stop": "user_stop",
-                    "silence": "silence", "quit": "app_quit"}
+                    "silence": "silence", "quit": "app_quit", "upgraded": "onsite_upgraded"}
 
-    def _rematch(self, rec, cal, title, title_source):
+    def _upgrade_to_live(self):
+        """Teams took the microphone while we were recording the room: the meeting turned out to be online.
+        Finish the on-site recording and start a live one (system + microphone); the new sidecar points back
+        to the first part with `continues`."""
+        first = self.rec.stem.name
+        title = self.title
+        log.info("on-site '%s' turned into a Teams call, switching to a live recording", title)
+        self.stop("upgraded")
+        cal = outlook_meeting(None, title)
+        better = guess_meeting_title(teams_window_titles())
+        self.start(better or (cal.get("subject") if cal else None) or title)
+        if self.rec:
+            self.continues = first
+            self.icon.notify(f"Schůzka pokračuje v Teams, nahrávám živě: {self.title}", "teamsrec")
+
+    def _rematch(self, rec, cal, title, title_source, titles_seen=()):
         """At the end of the call the Teams window has carried its real subject for a while. If the calendar
         link was only guessed by time (or missing), match again by that subject; a different meeting wins
         (a 10:59 start looked like the 10:30 meeting, but the window said 'Debrief'). Returns (cal, title,
         title_source, changed)."""
-        seen = [t for t in guess_titles(sorted(self.titles_seen)) if not is_generic_title(t)]
+        seen = [t for t in guess_titles(sorted(titles_seen)) if not is_generic_title(t)]
         if not seen or (cal and cal.get("match") == "title"):
             return cal, title, title_source, False
         for window_title in seen:
@@ -1164,24 +1560,26 @@ class App:
         log.info("renamed %s -> %s", stem.name, new_name)
         return new_dir / new_name
 
-    def _finalize(self, rec, files, dur, reason, screens=()):
+    def _finalize(self, rec, files, dur, reason, screens=(), info=None):
+        info = info or {}
         stem = rec.stem
         mix = None
         audio = [p for p in files if p.suffix.lower() == ".wav"]
         ff = _ffmpeg() if MIX_WITH_FFMPEG else None
         if ff and audio:
             mix = mix_audio(ff, stem, audio)
-        source = "onsite" if getattr(self, "onsite", False) else "playback" if self.playback else "manual" if self.manual else "live"
-        title = self.title
-        cal = getattr(self, "calendar", None)
-        title_source = getattr(self, "title_source", "generic")
+        source = info.get("source", "live")
+        title = info.get("title", "")
+        cal = info.get("cal")
+        title_source = info.get("title_source", "generic")
+        titles_seen = info.get("titles_seen") or set()
         if is_generic_title(title):  # the window got its real subject only later in the call
-            better = guess_meeting_title(sorted(self.titles_seen))
+            better = guess_meeting_title(sorted(titles_seen))
             if better:
                 log.info("title '%s' replaced by '%s' seen during the call", title, better)
                 title = better
                 title_source = "window"
-        cal, title, title_source, changed = self._rematch(rec, cal, title, title_source)
+        cal, title, title_source, changed = self._rematch(rec, cal, title, title_source, titles_seen)
         if changed or (title_source == "window" and slug(title) != stem.name[17:]):
             new_stem = self._rename_files(stem, title)
             if new_stem != stem:
@@ -1202,8 +1600,10 @@ class App:
             "title_source": title_source,
             "audio_reopens": rec.reopens,
             "tracks": {k: v for k, v in rec.tracks.items() if (stem.parent / v["file"]).exists()},
-            "teams_windows_seen": sorted(self.titles_seen),
+            "teams_windows_seen": sorted(titles_seen),
         }
+        if info.get("continues"):  # this live recording took over from an on-site one
+            meta["continues"] = info["continues"]
         if mix:
             meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
         if cal:
@@ -1255,7 +1655,9 @@ class App:
                         if elapsed > 15 and time.time() - self.rec.last_loud >= SILENCE_STOP_S:
                             self.stop("silence")
                     elif getattr(self, "onsite", False):
-                        pass  # ends only via the tray (Stop & keep) or the safety cap
+                        if ONSITE_UPGRADE and in_call:
+                            self._upgrade_to_live()
+                        # otherwise it ends via the tray (Stop & keep) or the safety cap
                     elif not self.manual:
                         if in_call:
                             self.call_missing_since = None
@@ -1285,6 +1687,8 @@ class App:
                         else:
                             self.declined = True  # start failed (logged); do not retry until the call ends
                     elif not in_call:
+                        if ONSITE_OFFER != "never" and USE_OUTLOOK:
+                            self._calendar_offer()
                         self.declined = False
                         if self.prejoin_since:  # the join dialog was closed without joining
                             log.info("Teams left the join screen without a call after %.0f s",

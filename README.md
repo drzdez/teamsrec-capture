@@ -22,8 +22,10 @@ the companion project [teamsrec-transcribe](https://github.com/drzdez/teamsrec-t
 
 Start it once (or let it autostart at login) and forget about it. It sits in the tray:
 
-1. When Teams starts using the microphone, a small always-on-top prompt appears in the top-right corner:
-   **Record "<meeting title>"? [● Record] [Skip]**. It auto-skips after 45 s. Enter = record, Esc = skip.
+1. When Teams starts using the microphone, recording starts at once and the tray shows a notification
+   (`prompt_default = "ask"` shows a *discard?* box instead). The join screen
+   (*Připojení ke schůzce / Join meeting*) does not count as a call: Teams holds the microphone there only for
+   the device preview, so the app waits for you to join and says so in the tray tooltip.
 2. While recording, the tray icon is red and shows the elapsed time. Tray menu: **Stop & keep**, **Abort & delete**.
 3. Recording stops by itself ~10 s after the call ends (hard cap 4 h). Recordings shorter than a minimum length are discarded (5 s in the prototype, `MIN_DURATION_S`; 2 min planned as the default).
 4. Files land in one folder per recording, `<OUT_DIR>/YYYY/MM/<stem>/`, as `<stem>_sys.wav`, `_mic.wav`,
@@ -104,7 +106,16 @@ Testing without a real meeting: in Teams use *Calendar → Meet now* and join al
 Make a test call* — both make Teams grab the microphone, so the prompt appears within 3 s. Leaving the call stops
 the recording after ~10 s. Recordings shorter than `MIN_DURATION_S` (5 s) are deleted.
 
-The prototype uses the Windows default devices; restart it after switching headsets.
+The prototype uses the Windows default devices; restart it after switching headsets. When a device stops
+delivering data (a Bluetooth headset falling asleep), the streams are reopened on the current devices, with a
+growing wait between attempts (0, 30, 60, 180, 300 s, at most 8) so the device is not hammered and Windows does
+not answer with a device-change storm; one tray warning is shown, and one notification when the audio is back.
+A recording where no track ever carried anything but digital silence gets `audio_silent: true` in the sidecar,
+and teamsrec-transcribe refuses to transcribe it (`latest` skips it). If no device can be opened at all, the
+recording does not start: an error notification names the device it looked for and the ones that exist, and no
+folder is left behind (0.7.1; before that the app happily “recorded” nothing for hours). While the audio is
+missing, the tray icon turns yellow, the status line says so and the warning repeats every 5 minutes — a single
+notification is easy to miss in a meeting.
 
 ## Planned stack
 

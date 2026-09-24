@@ -64,7 +64,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.1"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -115,6 +115,13 @@ TEAMS_NAV = {"activity", "chat", "teams", "calendar", "calls", "files", "apps", 
 TEAMS_GENERIC = {"meeting", "join meeting", "meeting compact view", "compact view", "call", "teams-call",
                  "připojení ke schůzce", "kompaktní zobrazení schůzky", "kompaktní zobrazení", "hovor", "schůzka",
                  "ovládací panel sdílení", "sharing control bar", "screen sharing toolbar", "sdílení obsahu"}
+
+
+# The pre-join dialog ("Připojení ke schůzce | <subject> | Microsoft Teams"): Teams already holds the
+# microphone for the device preview, but the call has not started (2026-09-21: 6.5 minutes of a join screen
+# recorded, no audio on it).
+TEAMS_PREJOIN = {"připojení ke schůzce", "pripojeni ke schuzce", "připojit se ke schůzce",
+                 "join meeting", "meeting join", "pre-join", "prejoin"}
 
 
 def is_generic_title(title: str | None) -> bool:
@@ -188,6 +195,32 @@ def teams_windows() -> list[tuple[int, str]]:
 
 def teams_window_titles() -> list[str]:
     return [t for _, t in teams_windows()]
+
+
+def _title_parts(title: str) -> list[str]:
+    return [p.strip() for p in title.split("|")]
+
+
+def is_prejoin_title(title: str) -> bool:
+    """The join dialog, which exists only before the call is joined."""
+    parts = _title_parts(title)
+    return len(parts) >= 2 and parts[-1].lower() == "microsoft teams" and parts[0].lower() in TEAMS_PREJOIN
+
+
+def is_meeting_window(title: str) -> bool:
+    """A window that exists only once the call is joined: "<subject> | Microsoft Teams", the compact view,
+    the sharing toolbar. Nav sections ("Calendar | …"), chats and the join dialog are not."""
+    parts = _title_parts(title)
+    if len(parts) < 2 or parts[-1].lower() != "microsoft teams":
+        return False
+    head = parts[0].lower()
+    return head not in TEAMS_PREJOIN and head not in TEAMS_NAV
+
+
+def prejoin_only(titles: list[str]) -> bool:
+    """True while Teams shows the join screen and no meeting window: the microphone is held by the device
+    preview of that dialog, so recording now would capture the dialog, not a call."""
+    return any(is_prejoin_title(t) for t in titles) and not any(is_meeting_window(t) for t in titles)
 
 
 # ---------------------------------------------------------------- Outlook calendar (classic Outlook, COM, local)
@@ -619,6 +652,8 @@ class Recorder:
         self.last_data = time.time()        # watchdog: last time any stream delivered a buffer
         self.last_mic_data = None           # watchdog: last time the mic delivered a buffer (None = never)
         self.last_mic_loud = 0.0            # watchdog: last time the user was audibly speaking
+        self.heard_sys = False              # anything but digital silence arrived on the loopback
+        self.heard_mic = False              # ... and on the microphone
 
     def _callback(self, name: str, q: queue.Queue):
         is_sys = name == "sys"
@@ -632,8 +667,10 @@ class Recorder:
             if audioop.max(data, 2) > SILENCE_LEVEL:
                 if is_sys:
                     self.last_loud = time.time()
+                    self.heard_sys = True
                 else:
                     self.last_mic_loud = time.time()
+                    self.heard_mic = True
             return (None, pyaudio.paContinue)
         return cb
 
@@ -729,14 +766,28 @@ class Recorder:
         self.reopens += 1
         return ok > 0
 
+    def input_names(self) -> list[str]:
+        """Names of the WASAPI devices that can be recorded from right now (for error messages)."""
+        try:
+            wasapi = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+            return [d["name"] for i in range(wasapi["deviceCount"])
+                    if (d := self.pa.get_device_info_by_host_api_device_index(wasapi["index"], i))["maxInputChannels"] > 0]
+        except Exception:
+            return []
+
     def start(self) -> list[Path]:
         devs = self._default_devices()
         files = [self._open(devs["sys"], "_sys.wav", "sys")] if "sys" in devs else []
         if "mic" in devs:
             try:
                 files.append(self._open(devs["mic"], "_mic.wav", "mic"))
-            except Exception as e:  # no mic is not fatal
+            except Exception as e:  # no mic is not fatal as long as the loopback track opened
                 log.warning("mic not recorded: %s", e)
+        if not files:  # nothing to write into: never pretend to record (2026-09-22: 4 h of "recording" nothing)
+            have = ", ".join(self.input_names()) or "žádná"
+            want = f"'{self.mic_name}'" if self.mic_name else "výchozí vstup"
+            raise RuntimeError(f"nepodařilo se otevřít žádné zvukové zařízení (hledáno {want}; "
+                               f"dostupná zařízení: {have})")
         for s in self.streams:
             s.start_stream()
         return files
@@ -818,7 +869,7 @@ def icon_image(color):
     return img
 
 
-IMG_IDLE, IMG_REC = icon_image("#7f8c8d"), icon_image("#e74c3c")
+IMG_IDLE, IMG_REC, IMG_WARN = icon_image("#7f8c8d"), icon_image("#e74c3c"), icon_image("#f1c40f")
 
 
 class App:
@@ -832,6 +883,10 @@ class App:
         self.no_audio_warned = False
         self.declined = False
         self.call_missing_since = None
+        self.prejoin_since = None           # Teams sits on the join screen: the call has not started yet
+        self.reopen_at = None               # when the last stream reopen happened (waiting for its verdict)
+        self.reopen_tries = 0               # failed reopens in a row -> longer backoff
+        self.next_reopen_at = 0.0
         self.lock = threading.Lock()
         self.quit = threading.Event()
         self.icon = pystray.Icon("teamsrec", IMG_IDLE, "teamsrec: idle", menu=pystray.Menu(
@@ -853,13 +908,18 @@ class App:
 
     # -- state
     def status(self):
+        if self.rec and getattr(self, "audio_warned", None):
+            m = int((datetime.now() - self.rec.started).total_seconds() // 60)
+            return f"⚠ {m} min — BEZ ZVUKU: {self.audio_warned}"
         if not self.rec:
+            if self.prejoin_since:
+                return "Teams join screen — recording starts when you join"
             return "Idle — waiting for a Teams call"
         m = int((datetime.now() - self.rec.started).total_seconds() // 60)
         return f"● REC {m} min — {self.title}"
 
     def _refresh(self):
-        self.icon.icon = IMG_REC if self.rec else IMG_IDLE
+        self.icon.icon = (IMG_WARN if getattr(self, "audio_warned", None) else IMG_REC) if self.rec else IMG_IDLE
         self.icon.title = self.status()
         self.icon.update_menu()
 
@@ -885,8 +945,9 @@ class App:
         title = cal["subject"] if cal and cal.get("subject") else "onsite"
         self.start(title, manual=True, onsite=True)
         if self.rec:
-            self.icon.notify(f"Nahrávám na místě: {title} (mikrofon {self.rec.tracks.get('mic', {}).get('device', '?')}). "
-                             f"Ukončete přes Stop & keep.", "teamsrec")
+            dev = self.rec.tracks.get("mic", {}).get("device", "?")
+            log.info("on-site recording from '%s'", dev)
+            self.icon.notify(f"Nahrávám na místě: {title} (mikrofon {dev}). Ukončete přes Stop & keep.", "teamsrec")
 
     def start(self, title, manual=False, playback=False, onsite=False):
         with self.lock:
@@ -901,11 +962,21 @@ class App:
                 self.files = rec.start()
             except Exception as e:
                 log.exception("start failed")
-                self.icon.notify(f"Recording failed: {e}", "teamsrec")
+                try:
+                    stem.parent.rmdir()  # the folder we made a moment ago, still empty
+                except OSError:
+                    pass
+                self.icon.notify(f"Nahrávání se NESPUSTILO: {e}", "teamsrec")
+                try:
+                    winsound.MessageBeep(winsound.MB_ICONHAND)
+                except Exception:
+                    pass
                 return
             self.rec, self.title, self.manual, self.playback, self.onsite = rec, title, manual, playback, onsite
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
-            self.audio_warned = None
+            self.audio_warned, self.audio_warned_at = None, 0.0
+            self.prejoin_since = None
+            self.reopen_at, self.reopen_tries, self.next_reopen_at = None, 0, 0.0
             self.calendar = None if playback else outlook_meeting(now, title)
             self.title_source = "manual" if manual else ("window" if not is_generic_title(title) else "generic")
             if self.calendar and self.calendar.get("subject") and (is_generic_title(title) or not manual):
@@ -919,13 +990,49 @@ class App:
                 except Exception:
                     log.exception("screen capture not started")
                     self.screen = None
-            elif SCREEN_CAPTURE:
+            elif SCREEN_CAPTURE and not onsite:
                 log.warning("screen capture needs ffmpeg (not found), recording audio only")
         self._refresh()
         log.info("START '%s' (%s) -> %s", title, "playback" if playback else "manual" if manual else "live", stem)
 
     AUDIO_STALL_S = 20     # no buffer from any device for this long = the device went to sleep / was unplugged
     AUDIO_SILENT_S = 90    # the system track stays digitally silent this long during a live call = wrong device
+    AUDIO_BACKOFF_S = (0, 30, 60, 180, 300)   # wait this long before the 1st, 2nd … failed reopen is retried
+    AUDIO_MAX_REOPENS = 8
+    REOPEN_CHECK_S = 12    # a reopen counts as successful only if data still arrives this long afterwards
+    AUDIO_REWARN_S = 300   # the "no audio" alarm repeats this often: one notification is missed in a meeting
+
+    def _reopen_result(self, rec, now: float):
+        """Did the last reopen bring the audio back? A sleeping Bluetooth dongle answers with one buffer and
+        goes quiet again, so the verdict is passed this long after the reopen, and a failed one makes the next
+        attempt wait longer: every reopen re-enumerates the devices and Windows answers with a device-change
+        storm (2026-09-21: 13 reopens = 13 tray notifications in 6 minutes)."""
+        if self.reopen_at is None or now - self.reopen_at < self.REOPEN_CHECK_S:
+            return
+        if now - rec.last_data <= 4:
+            log.info("audio watchdog: data is arriving again after the reopen")
+            self.reopen_tries = 0
+            self.next_reopen_at = 0.0
+        else:
+            self.reopen_tries += 1
+            wait = self.AUDIO_BACKOFF_S[min(self.reopen_tries, len(self.AUDIO_BACKOFF_S) - 1)]
+            log.warning("audio watchdog: reopen #%d brought no data (device asleep or taken by Teams?), "
+                        "next attempt in %d s", rec.reopens, wait)
+            self.next_reopen_at = now + wait
+        self.reopen_at = None
+
+    def _try_reopen(self, rec, now: float):
+        """At most one reopen per backoff window, and never while the previous one is still being judged."""
+        if self.reopen_at is not None or now < self.next_reopen_at or rec.reopens >= self.AUDIO_MAX_REOPENS:
+            return
+        log.warning("audio watchdog: no data for %.0f s, reopening the streams on the current devices",
+                    now - rec.last_data)
+        try:
+            if rec.reopen():
+                self.reopen_at = time.time()
+        except Exception:
+            log.exception("reopen")
+            self.next_reopen_at = now + self.AUDIO_BACKOFF_S[-1]
 
     def _audio_watchdog(self, elapsed: float):
         """Warn loudly (tray + log) when the call audio is not arriving: a Bluetooth headset that fell asleep,
@@ -934,35 +1041,30 @@ class App:
         now = time.time()
         if not rec or self.playback or elapsed < self.AUDIO_STALL_S + 5:
             return
+        self._reopen_result(rec, now)
         if elapsed < self.AUDIO_SILENT_S and time.time() - rec.last_data <= self.AUDIO_STALL_S:
             return
         if rec.mic_only:
-            if now - rec.last_data > self.AUDIO_STALL_S and rec.reopens < 20:
-                log.warning("audio watchdog: microphone silent (no data) for %.0f s, reopening", now - rec.last_data)
-                try:
-                    rec.reopen()
-                except Exception:
-                    log.exception("reopen")
+            if now - rec.last_data > self.AUDIO_STALL_S:
+                self._try_reopen(rec, now)
             return
         stalled = now - rec.last_data > self.AUDIO_STALL_S
-        if stalled and rec.reopens < 20:
-            log.warning("audio watchdog: no data for %.0f s, reopening the streams on the current devices", now - rec.last_data)
-            try:
-                if rec.reopen():
-                    self.icon.notify("Audio device changed – recording continues on the new device.", "teamsrec")
-                    return
-            except Exception:
-                log.exception("reopen")
+        if stalled:
+            self._try_reopen(rec, now)
+            if self.reopen_at is not None:
+                return  # a reopen is under way: wait for its verdict before alarming the user
         # the others being silent while the user talks (presenting, a monologue) is not a fault
         silent = now - rec.last_loud > self.AUDIO_SILENT_S and now - rec.last_mic_loud > self.AUDIO_SILENT_S
         no_mic = rec.with_mic and rec.last_mic_data is None
         problem = "audio streams stopped (device asleep or unplugged?)" if stalled else \
             "system audio is silent (Teams playing through another device?)" if silent else \
             "the microphone never delivered data" if no_mic else None
-        if problem and not getattr(self, "audio_warned", None):
-            self.audio_warned = problem
+        if problem and (problem != getattr(self, "audio_warned", None)
+                        or now - getattr(self, "audio_warned_at", 0.0) > self.AUDIO_REWARN_S):
+            self.audio_warned, self.audio_warned_at = problem, now
             log.warning("audio watchdog: %s", problem)
-            self.icon.notify(f"Recording problem: {problem}. Check the headset / Teams audio device.", "teamsrec")
+            self.icon.notify(f"Zvuk se NENAHRÁVÁ: {problem}. Zkontrolujte sluchátka / vstupní zařízení.", "teamsrec")
+            self._refresh()
             try:
                 winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
             except Exception:
@@ -970,6 +1072,8 @@ class App:
         elif not problem and getattr(self, "audio_warned", None):
             log.info("audio watchdog: audio is back")
             self.audio_warned = None
+            self._refresh()
+            self.icon.notify("Zvuk se obnovil, nahrávání pokračuje.", "teamsrec")
 
     def _ask_discard(self, rec, title):
         """Runs beside the recording; only a clear "Ano" discards it."""
@@ -994,6 +1098,21 @@ class App:
             files += [rec.stem.parent / m["file"] for m in screens if (rec.stem.parent / m["file"]).exists()]
         self._refresh()
         log.info("STOP (%s) after %.0fs", reason, dur)
+        if not any(p.suffix.lower() == ".wav" for p in files):  # the devices vanished: nothing was ever written
+            for p in files:
+                p.unlink(missing_ok=True)
+            try:
+                rec.stem.parent.rmdir()
+            except OSError:
+                pass
+            log.error("%s: no audio file was written (%d reopens), nothing kept", rec.stem.name, rec.reopens)
+            self.icon.notify(f"Nahrávka {rec.stem.name} NEVZNIKLA: zvukové zařízení nedodalo nic. "
+                             f"Zkontrolujte mikrofon.", "teamsrec")
+            try:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            except Exception:
+                pass
+            return
         if reason == "aborted" or dur < MIN_DURATION_S:
             for p in files:
                 p.unlink(missing_ok=True)
@@ -1093,13 +1212,21 @@ class App:
                                 "start": cal["start"].isoformat(timespec="minutes"), "end": cal["end"].isoformat(timespec="minutes"),
                                 "match": cal.get("match", "time"), "status": "auto", "candidates": cal.get("candidates", [])}
             log.info("calendar: '%s' (by %s), %d participants", cal.get("subject"), cal.get("match"), len(cal.get("attendees", [])))
+        if not (rec.heard_sys or rec.heard_mic):  # every buffer was digital silence: the device delivered nothing
+            meta["audio_silent"] = True
+            log.warning("%s: no audible audio on any track (%d reopens), marked audio_silent",
+                        stem.name, rec.reopens)
         kept = [m for m in screens if (stem.parent / m["file"]).exists() and (stem.parent / m["file"]).stat().st_size > 0]
         if kept:
             meta["screens"] = kept
             log.info("screens: %s", ", ".join(f"{m['file']} ({m['frames']} frames)" for m in kept))
         jpath = Path(f"{stem}.json")  # written last: marks the recording as complete
         jpath.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self.icon.notify(f"Saved {stem.name} ({round(dur / 60)} min)", "teamsrec")
+        if meta.get("audio_silent"):
+            self.icon.notify(f"{stem.name}: žádný zvuk (zařízení nedodalo data), nahrávka se nebude zpracovávat.",
+                             "teamsrec")
+        else:
+            self.icon.notify(f"Saved {stem.name} ({round(dur / 60)} min)", "teamsrec")
         if POST_HOOK:
             fmt = dict(stem=stem.name, dir=str(stem.parent), json=str(jpath),
                        sys=str(audio[0]) if audio else "", mic=str(audio[1]) if len(audio) > 1 else "",
@@ -1138,7 +1265,13 @@ class App:
                                 self.stop("call ended")
                     self._refresh()
                 else:
-                    if in_call and not self.declined:
+                    if in_call and not self.declined and prejoin_only(teams_window_titles()):
+                        if not self.prejoin_since:  # the mic is held by the join dialog's device preview
+                            self.prejoin_since = time.time()
+                            log.info("Teams is on the join screen, waiting for the call to start")
+                            self._refresh()
+                    elif in_call and not self.declined:
+                        self.prejoin_since = None
                         title = guess_meeting_title(teams_window_titles()) or "teams-call"
                         cal = outlook_meeting(None, title)
                         if cal and cal.get("subject"):
@@ -1153,6 +1286,11 @@ class App:
                             self.declined = True  # start failed (logged); do not retry until the call ends
                     elif not in_call:
                         self.declined = False
+                        if self.prejoin_since:  # the join dialog was closed without joining
+                            log.info("Teams left the join screen without a call after %.0f s",
+                                     time.time() - self.prejoin_since)
+                            self.prejoin_since = None
+                            self._refresh()
             except Exception:
                 log.exception("loop")
             time.sleep(POLL_S)
@@ -1181,6 +1319,7 @@ if __name__ == "__main__":
     if not _single_instance():
         log.info("teamsrec is already running, exiting")
         raise SystemExit(0)
+    log.info("teamsrec %s started (pid %d, %s)", APP_VERSION, os.getpid(), sys.executable)
     try:
         recover_orphans(OUT_DIR)
     except Exception:

@@ -10,6 +10,9 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
 - ☑ Přepis WhisperX na GPU, jména z videa Teams (OCR jmenovek), export txt/srt.
 - ☑ Zápisy lokálně přes Ollamu, Claude jako srovnání; sekce Mluvčí v zápisu. 2026-09-10
 - ☑ Vlastní hlas z mikrofonní stopy (`[user] name`). 2026-09-10
+- ☑ Odolnost nahrávání (prototyp 0.7.0 a 0.7.1). 2026-09-24: nahrávání, které neotevře žádné zvukové
+  zařízení, se vůbec nespustí (4 on-site schůzky 22.–23. 9. „nahrávaly“ do prázdna); žlutá ikona a opakovaný
+  alarm, když zvuk nechodí. 2026-09-21: předvstupní obrazovka Teams („Připojení ke schůzce“) se nenahrává – drží mikrofon jen kvůli náhledu zařízení; hlídač zvuku otevírá streamy znovu s prodlužující se pauzou (0/30/60/180/300 s, max 8) místo každých 20 s; nahrávka, na které nikdy nic nebylo slyšet, dostane `audio_silent` a nepřepisuje se.
 
 ## Další kroky (v tomto pořadí, rozhodnuto 2026-09-10/11)
 

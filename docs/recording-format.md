@@ -90,6 +90,8 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 | `origin_path` | string | ne | jen `import`: absolutní cesta k původnímu souboru v době importu |
 | `metadata_source` | enum | ne | jen `import`: odkud jsou `title` a `start`: `teams-name`, `container`, `file`, `user` |
 | `participants[]` | objekt | ne | z kalendáře, pokud dostupné; `role` ∈ `organizer`, `required`, `optional`, `self` |
+| `audio_silent` | bool | ne | `true` = ve všech stopách bylo jen digitální ticho (zařízení nedodalo data); nahrávka se nepřepisuje |
+| `audio_reopens` | int | ne | kolikrát musel hlídač znovu otevřít zvukové streamy |
 | `teams_windows_seen[]` | string | ne | ladicí informace |
 
 Objekt `track`: `file` (jen jméno souboru, ne cesta), `sample_rate` (Hz), `channels` (1 nebo 2). WAV je vždy PCM 16‑bit.

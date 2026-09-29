@@ -10,8 +10,11 @@ the companion project [teamsrec-transcribe](https://github.com/drzdez/teamsrec-t
 
 ## Status
 
-**No .NET code yet.** What exists:
+What exists:
 
+- `dotnet/` — the .NET 10 port of the prototype (tray app, WASAPI via NAudio, xUnit tests). How it is built and why:
+  **[.NET návrh / design](docs/dotnet-design.md)**; build, run and status: [dotnet/README.md](dotnet/README.md);
+  what matches the prototype and what is still missing: [dotnet/PARITY.md](dotnet/PARITY.md).
 - `docs/recording-format.md` + `docs/recording.schema.json` — the contract both projects build on.
 - `docs/roadmap.md` — shared plan of both repos: what is done, what comes next, what is still to be decided.
 - `legacy/teamsrec.py` — the working Python prototype this app is a port of. It is usable today,

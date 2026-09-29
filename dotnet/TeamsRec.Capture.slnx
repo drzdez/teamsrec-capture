@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TeamsRec.Capture/TeamsRec.Capture.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TeamsRec.Capture.Tests/TeamsRec.Capture.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -102,7 +102,7 @@ Setup (once):
 ```
 cd legacy
 uv venv --python 3.12 .venv
-uv pip install --python .venv/Scripts/python.exe pyaudiowpatch pystray pillow pywin32 psutil
+uv pip install --python .venv/Scripts/python.exe pyaudiowpatch pystray pillow pywin32 psutil pycaw
 winget install Gyan.FFmpeg        # enables the _mix.wav (found automatically in the WinGet folder)
 ```
 

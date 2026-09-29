@@ -66,7 +66,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -93,6 +93,8 @@ ONSITE_OFFER = str(CONFIG.get("capture", {}).get("onsite_offer", "never"))     #
 ONSITE_UPGRADE = bool(CONFIG.get("capture", {}).get("onsite_upgrade", True))   # on-site meeting that turns into a Teams call
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
+ALIVE_LEVEL = 8            # int16 peak: a working microphone always has room noise above this (~-72 dBFS);
+                           # a dongle without its headset, or a mic Teams is not using, delivers ~0
 POLL_S = 3                 # how often to check for a call
 PROMPT_TIMEOUT_S = 45      # the "discard?" box closes by itself after this (PROMPT_DEFAULT: record = keep | skip = discard)
 MIN_DURATION_S = 5         # shorter recordings are deleted
@@ -398,6 +400,52 @@ def teams_windows() -> list[tuple[int, str]]:
                     out.append((hwnd, t))
     win32gui.EnumWindows(cb, None)
     return out
+
+
+def _is_teams_process(pid: int) -> bool:
+    """The process or one of its parents is Teams (its audio may run in a helper process)."""
+    try:
+        p = psutil.Process(pid)
+        for _ in range(4):
+            if (p.name() or "").lower() in TEAMS_EXE:
+                return True
+            p = p.parent()
+            if p is None:
+                return False
+    except psutil.Error:
+        return False
+    return False
+
+
+def teams_input_device() -> str | None:
+    """The microphone Teams is capturing from right now: the capture endpoint where a Teams process holds an
+    active audio session. Teams picks its devices itself, so the Windows default input can be a different
+    microphone entirely (2026-09-29: the default was the BT-W5 dongle, Teams used the Sony headset's microphone,
+    and the user was missing from the whole recording). None when Teams has no active session."""
+    try:
+        import comtypes
+        from pycaw.constants import CLSID_MMDeviceEnumerator
+        from pycaw.pycaw import AudioUtilities, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator
+    except ImportError:
+        return None
+    comtypes.CoInitialize()
+    try:
+        enum = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator,
+                                         comtypes.CLSCTX_INPROC_SERVER)
+        coll = enum.EnumAudioEndpoints(1, 1)  # eCapture, DEVICE_STATE_ACTIVE
+        for i in range(coll.GetCount()):
+            dev = coll.Item(i)
+            mgr = dev.Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
+            sessions = mgr.QueryInterface(IAudioSessionManager2).GetSessionEnumerator()
+            for j in range(sessions.GetCount()):
+                ctl = sessions.GetSession(j).QueryInterface(IAudioSessionControl2)
+                if ctl.GetState() == 1 and _is_teams_process(ctl.GetProcessId()):  # 1 = AudioSessionStateActive
+                    return AudioUtilities.CreateDevice(dev).FriendlyName
+    except Exception as e:
+        log.warning("which microphone Teams uses: lookup failed: %s", e)
+    finally:
+        comtypes.CoUninitialize()
+    return None
 
 
 def teams_window_titles() -> list[str]:
@@ -861,6 +909,7 @@ class Recorder:
         self.last_mic_loud = 0.0            # watchdog: last time the user was audibly speaking
         self.heard_sys = False              # anything but digital silence arrived on the loopback
         self.heard_mic = False              # ... and on the microphone
+        self.last_mic_alive = time.time()   # last time the mic carried at least room noise
 
     def _callback(self, name: str, q: queue.Queue):
         is_sys = name == "sys"
@@ -871,7 +920,10 @@ class Recorder:
             self.last_data = time.time()
             if not is_sys:
                 self.last_mic_data = self.last_data
-            if audioop.max(data, 2) > SILENCE_LEVEL:
+            peak = audioop.max(data, 2)
+            if not is_sys and peak > ALIVE_LEVEL:
+                self.last_mic_alive = time.time()
+            if peak > SILENCE_LEVEL:
                 if is_sys:
                     self.last_loud = time.time()
                     self.heard_sys = True
@@ -1331,7 +1383,14 @@ class App:
             stem = OUT_DIR / f"{now:%Y}" / f"{now:%m}" / name / name
             stem.parent.mkdir(parents=True, exist_ok=True)
             try:
-                mic_name = (ONSITE_MIC if mic is None else mic) if onsite else ""
+                if onsite:
+                    mic_name = ONSITE_MIC if mic is None else mic
+                elif playback:
+                    mic_name = ""
+                else:  # a call: the microphone Teams uses, whatever the Windows default input is
+                    mic_name = teams_input_device() or ""
+                    log.info("microphone: %s", f"Teams uses '{mic_name}'" if mic_name
+                             else "Teams holds no microphone session, using the Windows default input")
                 rec = Recorder(stem, with_mic=not playback, mic_only=onsite, mic_name=mic_name)
                 self.files = rec.start()
             except Exception as e:
@@ -1375,6 +1434,40 @@ class App:
     AUDIO_MAX_REOPENS = 8
     REOPEN_CHECK_S = 12    # a reopen counts as successful only if data still arrives this long afterwards
     AUDIO_REWARN_S = 300   # the "no audio" alarm repeats this often: one notification is missed in a meeting
+
+    TEAMS_MIC_CHECK_S = 30
+    DEAD_MIC_S = 120       # a microphone without even room noise this long is not the one in use
+
+    def _follow_teams_mic(self, elapsed: float):
+        """During a call, check now and then which microphone Teams uses; when the user switched headsets,
+        reopen the mic track on the new one (same format) or say loudly that it cannot be followed."""
+        rec = self.rec
+        if not rec or self.playback or getattr(self, "onsite", False) or "mic" not in rec.tracks:
+            return
+        now = time.time()
+        if now - getattr(self, "teams_mic_checked", 0.0) < self.TEAMS_MIC_CHECK_S:
+            return
+        self.teams_mic_checked = now
+        current = teams_input_device()
+        recorded = rec.tracks["mic"].get("device", "")
+        if not current or current == recorded or current == getattr(self, "teams_mic_warned", None):
+            return
+        log.warning("Teams now uses the microphone '%s', the recording has '%s'", current, recorded)
+        rec.mic_name = current
+        try:
+            rec.reopen()
+        except Exception:
+            log.exception("reopen on the Teams microphone")
+        if rec.tracks["mic"].get("device") == current:
+            self.icon.notify(f"Mikrofon přepnut na „{current}“ (ten teď používá Teams).", "teamsrec")
+        else:  # different sample format: one file cannot hold both
+            self.teams_mic_warned = current
+            self.icon.notify(f"Teams používá mikrofon „{current}“, ale nahrávka ho nezachytí (jiný formát). "
+                             f"Váš hlas bude v nahrávce chybět.", "teamsrec")
+            try:
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                pass
 
     def _reopen_result(self, rec, now: float):
         """Did the last reopen bring the audio back? A sleeping Bluetooth dongle answers with one buffer and
@@ -1430,9 +1523,14 @@ class App:
         # the others being silent while the user talks (presenting, a monologue) is not a fault
         silent = now - rec.last_loud > self.AUDIO_SILENT_S and now - rec.last_mic_loud > self.AUDIO_SILENT_S
         no_mic = rec.with_mic and rec.last_mic_data is None
+        # not even room noise for minutes: this microphone is not the one in use (2026-09-29, the whole call)
+        dead_mic = (rec.with_mic and "mic" in rec.tracks and elapsed > self.DEAD_MIC_S
+                    and now - getattr(rec, "last_mic_alive", now) > self.DEAD_MIC_S)
         problem = "audio streams stopped (device asleep or unplugged?)" if stalled else \
             "system audio is silent (Teams playing through another device?)" if silent else \
-            "the microphone never delivered data" if no_mic else None
+            "the microphone never delivered data" if no_mic else \
+            (f"mikrofon „{rec.tracks['mic'].get('device', '?')}“ je úplně potichu – "
+             f"Teams nejspíš používá jiný, váš hlas se nenahrává") if dead_mic else None
         if problem and (problem != getattr(self, "audio_warned", None)
                         or now - getattr(self, "audio_warned_at", 0.0) > self.AUDIO_REWARN_S):
             self.audio_warned, self.audio_warned_at = problem, now
@@ -1649,6 +1747,7 @@ class App:
                         log.warning("no audio data from the default devices after 10 s (headset off? wrong default device?)")
                         self.icon.notify("No audio is arriving from the default devices. Headset off?", "teamsrec")
                     self._audio_watchdog(elapsed)
+                    self._follow_teams_mic(elapsed)
                     if elapsed > MAX_DURATION_S:
                         self.stop("max duration")
                     elif self.playback:

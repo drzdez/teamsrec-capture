@@ -68,6 +68,8 @@ class FakeRec:
         self.reopens = self.reopen_calls = 0
         self.last_data = self.last_loud = self.last_mic_loud = self.last_mic_data = time.time()
         self.heard_sys = self.heard_mic = False
+        self.last_mic_alive = time.time()
+        self.tracks = {}
         self.stem = TMP / "fake" / "2026-09-25_0900_fake"
 
     def reopen(self):
@@ -353,6 +355,89 @@ def test_settings_api_and_toml():
         assert parsed["brandnew"] == {"flag": True, "text": 'a "quoted" value'}
     finally:
         srv.shutdown()
+
+
+def test_a_call_records_the_microphone_teams_uses():
+    """The Windows default input was the BT-W5 dongle, Teams used the Sony headset: record what Teams uses."""
+    app = app_with()
+    seen = {}
+
+    class Rec:
+        def __init__(self, stem, with_mic=True, mic_only=False, mic_name=""):
+            seen["mic_name"], seen["mic_only"] = mic_name, mic_only
+            self.started, self.tracks, self.reopens = datetime.now(), {}, 0
+            self.stem = stem
+
+        def start(self):
+            return []  # the test stops right after the recorder was built
+
+    saved = (t.Recorder, t.teams_input_device, t.SCREEN_CAPTURE, t.outlook_meeting)
+    t.Recorder, t.SCREEN_CAPTURE, t.outlook_meeting = Rec, False, (lambda *a, **k: None)
+    try:
+        t.teams_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
+        app.start("Archi standup")
+        assert seen["mic_name"] == "Sluchátka s mikrofonem (WH-1000XM6)" and not seen["mic_only"], seen
+        app.rec = None
+        t.teams_input_device = lambda: None  # no session: the Windows default input, as before
+        app.start("Archi standup")
+        assert seen["mic_name"] == "", seen
+    finally:
+        t.Recorder, t.teams_input_device, t.SCREEN_CAPTURE, t.outlook_meeting = saved
+        app.rec = None
+        shutil.rmtree(TMP / f"{datetime.now():%Y}", ignore_errors=True)
+
+
+def test_a_headset_switch_during_the_call_is_followed():
+    rec = FakeRec()
+    rec.tracks = {"mic": {"device": "Mikrofon (Creative BT-W5)", "sample_rate": 48000, "channels": 1}}
+    rec.mic_name = ""
+
+    def reopen(same_format=True):
+        rec.reopens += 1
+        if same_format:
+            rec.tracks["mic"]["device"] = rec.mic_name
+        return True
+
+    app = app_with(rec)
+    saved = t.teams_input_device
+    t.teams_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
+    try:
+        rec.reopen = lambda: reopen(True)
+        app._follow_teams_mic(120)
+        assert rec.tracks["mic"]["device"] == "Sluchátka s mikrofonem (WH-1000XM6)"
+        assert "přepnut" in app.icon.notes[-1], app.icon.notes
+        app._follow_teams_mic(125)  # checked again only after TEAMS_MIC_CHECK_S
+        assert rec.reopens == 1
+
+        # a different sample format cannot go into the same file: say so, once
+        rec.tracks["mic"]["device"] = "Mikrofon (Creative BT-W5)"
+        rec.reopen = lambda: reopen(False)
+        app.teams_mic_checked = 0.0
+        app._follow_teams_mic(200)
+        assert "nezachytí" in app.icon.notes[-1], app.icon.notes
+        app.teams_mic_checked = 0.0
+        n = len(app.icon.notes)
+        app._follow_teams_mic(260)
+        assert len(app.icon.notes) == n and rec.reopens == 2, "warned once, not every 30 s"
+    finally:
+        t.teams_input_device = saved
+
+
+def test_a_dead_microphone_raises_the_alarm_during_the_call():
+    """2026-09-29: the mic delivered buffers of digital silence for 16 minutes and nobody was told."""
+    rec = FakeRec()
+    rec.tracks = {"mic": {"device": "Mikrofon (Creative BT-W5)"}}
+    rec.last_mic_alive = time.time() - 200     # not even room noise for over three minutes
+    app = app_with(rec)
+    app._audio_watchdog(300)
+    assert app.audio_warned and "potichu" in app.audio_warned, app.audio_warned
+    assert "BT-W5" in app.icon.notes[-1], app.icon.notes
+    rec2 = FakeRec()
+    rec2.tracks = {"mic": {"device": "Sluchátka s mikrofonem (WH-1000XM6)"}}
+    rec2.last_mic_alive = time.time() - 5      # a live microphone: room noise all the time
+    app2 = app_with(rec2)
+    app2._audio_watchdog(300)
+    assert not app2.audio_warned, app2.audio_warned
 
 
 def test_microphone_records():

@@ -21,8 +21,6 @@ public sealed class Recorder : IAudioSource, IDisposable
     private readonly object _sync = new();
     private readonly Dictionary<string, Track> _state = new();              // "sys"/"mic" -> open track
     private readonly Dictionary<string, TrackInfo> _tracks = new();         // what the sidecar gets
-    private WasapiOut? _keepAlive;
-    private MMDevice? _keepAliveDevice;
     private bool _stopped;
     private double _stoppedDuration;
 
@@ -106,8 +104,6 @@ public sealed class Recorder : IAudioSource, IDisposable
                 throw new InvalidOperationException(
                     $"nepodařilo se otevřít žádné zvukové zařízení (hledáno {want}; dostupná zařízení: {have})");
             }
-            if (_state.ContainsKey("sys"))
-                StartKeepAlive();
             return files;
         }
     }
@@ -122,7 +118,6 @@ public sealed class Recorder : IAudioSource, IDisposable
             if (_stopped)
                 return false;
             double gap = Math.Max(0.0, _clock.Seconds - LastData);
-            StopKeepAlive();
             foreach (var t in _state.Values)
                 CloseCapture(t);
 
@@ -166,8 +161,6 @@ public sealed class Recorder : IAudioSource, IDisposable
             }
             sys?.Dispose();
             mic?.Dispose();
-            if (_state.TryGetValue("sys", out var st) && st.Capture != null)
-                StartKeepAlive();
             Volatile.Write(ref _lastData, _clock.Seconds);
             Interlocked.Increment(ref _reopens);
             return ok > 0;
@@ -182,7 +175,6 @@ public sealed class Recorder : IAudioSource, IDisposable
             if (_stopped)
                 return _stoppedDuration;
             _stopped = true;
-            StopKeepAlive();
             foreach (var t in _state.Values)
                 CloseCapture(t);
             foreach (var t in _state.Values)
@@ -423,56 +415,6 @@ public sealed class Recorder : IAudioSource, IDisposable
         }
     }
 
-    /// <summary>WASAPI loopback delivers no buffers at all while nothing plays, which would shorten the sys
-    /// track (misaligned with the mic and the screen videos) and look like a dead device to the watchdog.
-    /// Playing silence on the same output keeps the audio engine running, so the loopback delivers a
-    /// continuous stream (PortAudio did the equivalent for the prototype).</summary>
-    private void StartKeepAlive()
-    {
-        try
-        {
-            using var en = new MMDeviceEnumerator();
-            var dev = Devices.DefaultRenderEndpoint(en);
-            if (dev == null)
-                return;
-            WaveFormat mix;
-            using (var client = dev.AudioClient)
-                mix = client.MixFormat;
-            var player = new WasapiOut(dev, AudioClientShareMode.Shared, true, 200);
-            try
-            {
-                player.Init(new SilenceProvider(mix));
-                player.Play();
-            }
-            catch
-            {
-                player.Dispose();
-                dev.Dispose();
-                throw;
-            }
-            _keepAlive = player;
-            _keepAliveDevice = dev;
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"loopback keep-alive failed, silent stretches may be missing from the sys track: {e.Message}");
-        }
-    }
-
-    private void StopKeepAlive()
-    {
-        try
-        {
-            _keepAlive?.Stop();
-            _keepAlive?.Dispose();
-        }
-        catch (Exception)
-        {
-        }
-        _keepAlive = null;
-        _keepAliveDevice?.Dispose();
-        _keepAliveDevice = null;
-    }
 }
 
 /// <summary>Layout of the samples a WASAPI stream delivers.</summary>

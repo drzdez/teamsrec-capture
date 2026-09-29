@@ -52,9 +52,8 @@ Everything goes to `<out_dir>\teamsrec.log`, in the same line format as the prot
 same file. On startup the app also tries to recover recordings that a crash left without a sidecar (see the
 PARITY.md; since 2026-09-29 this also works for WAVs the .NET app wrote itself).
 
-> **Nothing has been run against real devices yet.** The two blockers found by the parity review (the app
-> counting its own microphone as Teams, crash recovery of NAudio WAVs) are fixed; read PARITY.md gaps 4-7
-> before the first live call.
+> **In use since 2026-09-29, not yet checked on a real call.** Everything the parity review found is fixed
+> (PARITY.md gaps 1-8); what is left are notes on behaviour inherited from the prototype (gap 9).
 
 ## Configuration
 
@@ -117,12 +116,11 @@ dotnet/
 
 ## Current status (2026-09-29)
 
-- It builds with 0 warnings and 0 errors, and all 156 tests pass. Every module of the prototype is ported
+- It builds with 0 warnings and 0 errors, and all 160 tests pass. Every module of the prototype is ported
   except the post-recording hook (unused in the prototype) and the dead Tk prompt.
 - The smoke run with the prototype holding the mutex exited cleanly ("already running").
 - **Not yet run on real hardware.** Fixed after the parity review (2026-09-29): the app no longer counts
   its own microphone use as a Teams call, crash recovery reads NAudio's WAV headers, and the process is
-  per-monitor-v2 DPI aware. Open: PARITY.md gaps 4-7.
-- Other differences: screen capture runs in-process (the prototype used a child process), a loopback keep-alive
-  plays silence on the default output, there is no window video for playback recordings, and calendar
-  candidates are looked up at finalize time.
+  per-monitor-v2 DPI aware. Then, like the prototype: window capture in a child process, the tray never waits
+  for a recording to stop, window video for playback too, calendar candidates at the start, and no silence
+  stream on the default output (PARITY.md gaps 4-8).

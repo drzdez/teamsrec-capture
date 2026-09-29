@@ -293,7 +293,8 @@ public static class Outlook
         {
             var list = (items ?? Items)(when);
             var (it, match) = Pick(list, when, title);
-            return it is null ? null : it with { Match = match };
+            // the other meetings near the start go with the match: at stop Outlook may be closed already
+            return it is null ? null : it with { Match = match, Candidates = CandidatesAt(list, when) };
         }
         catch (Exception e)  // Outlook not running / new Outlook without COM / no profile
         {

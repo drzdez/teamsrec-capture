@@ -10,8 +10,8 @@ teamsrec-transcribe beze změny.
 - **Jeden spustitelný soubor** bez Pythonu, virtuálního prostředí a trampolíny `pythonw` (dnes jsou v seznamu procesů
   dva procesy a jednou jsme omylem zabili ten skutečný).
 - **Windows API přímo**: WASAPI a Core Audio přes NAudio, registr, okna a COM (Outlook) bez mostů jako pywin32/pycaw.
-- **Stabilita**: prototyp musel snímání oken přesunout do samostatného procesu, protože pád Tk jednou zabil nahrávku.
-  V .NET je UI (WinForms, ikona v liště) a nahrávání v jednom procesu s oddělenými vlákny a bez Tcl.
+- **Stabilita**: UI (WinForms, ikona v liště) bez Tcl/Tk; snímání oken běží stejně jako v prototypu v samostatném
+  procesu, takže jeho pád nahrávání zvuku neshodí.
 - Instalace do budoucna jako `winget install` (roadmapa).
 
 ## Přehled
@@ -85,9 +85,16 @@ vyhodnotí po 12 s a další pokus čeká 0/30/60/180/300 s (nejvýš 8×). Bez 
 13 hlášení o změně zařízení. Mikrofon bez jakéhokoli šumu místnosti 2 minuty znamená, že se nahrává z nepoužívaného
 zařízení - ikona zežloutne a hlášení se opakuje po 5 minutách.
 
-**Snímání oken ve vlákně, ne v procesu.** Prototyp je v samostatném procesu kvůli pádům Tk. V .NET žádné Tk není;
-snímání běží na vlákně na pozadí, každá výjimka se zaloguje a nahrávání zvuku nikdy neshodí. Každé okno Teams má
-vlastní proces ffmpeg, do kterého jdou snímky 1600×900 (poměr stran zachován, okraje černé).
+**Snímání oken v samostatném procesu.** Stejně jako prototyp: aplikace spustí sama sebe jako
+`teamsrec-capture.exe --screen-capture <stem> <start>`. Zaseknuté `PrintWindow` nebo pád GDI či enkodéru tak zůstane
+v tom procesu a nahrávání zvuku neshodí. Proces snímá, dokud mu aplikace nezavře stdin (nebo dokud aplikace
+neskončí), a pak zapíše `<stem>_screens.json`. Když do 45 s neskončí, aplikace ho ukončí; videa na disku se
+použijí i bez jeho hlášení (`recovered`). Každé okno Teams má vlastní proces ffmpeg, do kterého jdou snímky
+1600×900 (poměr stran zachován, okraje černé).
+
+**Zastavení mimo zámek.** Stav nahrávky se převezme pod zámkem, zavírání streamů a videí (i desítky sekund)
+proběhne mimo něj, takže ikona v liště nikdy nečeká. Stejně tak dotaz do Outlooku při startu běží až po spuštění
+nahrávání a mimo zámek.
 
 **Stránka nastavení přes `HttpListener`.** Stejný `settings.html` a stejné JSON API jako prototyp (jen 127.0.0.1,
 spouští se až kliknutím na Settings…). Konfigurace se zapisuje do sdíleného `teamsrec.toml` po řádcích, takže

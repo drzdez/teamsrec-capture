@@ -12,8 +12,8 @@ namespace TeamsRec.Capture.Screen;
 /// windows during a call - the meeting window, a popped-out gallery, shared content - so each gets its own file;
 /// the analysis later looks for name labels in all of them. A window that is minimized or briefly fails to
 /// render gets its last frame repeated, so the timeline stays aligned with the audio.
-/// The prototype ran this in a child process because a Tk crash there once killed a recording; here it is a
-/// background thread whose every step is caught and logged - nothing is ever thrown into the caller.
+/// It runs in its own process (ScreenCaptureProcess), as in the prototype: a hung PrintWindow or a crash in GDI
+/// or an encoder must not take the audio recording down. Inside, every step is caught and logged.
 /// </summary>
 public sealed class ScreenCapture : IDisposable
 {

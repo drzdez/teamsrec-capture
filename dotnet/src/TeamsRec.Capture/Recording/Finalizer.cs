@@ -11,11 +11,6 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
     /// <summary>ffmpeg lookup, replaceable so tests run without ffmpeg (null = no mix).</summary>
     public Func<string?> FindFfmpeg { get; init; } = Mixer.FindFfmpeg;
 
-    /// <summary>Other calendar items near the start, for the review page's calendar.candidates (Python:
-    /// outlook_meeting attached them to the match). CalendarItem cannot carry them, so they are looked up here;
-    /// null = none. Must not throw (the finalizer runs on a background thread).</summary>
-    public Func<CalendarItem, DateTime, IEnumerable<CalendarItem>>? CalendarCandidates { get; init; }
-
     /// <summary>No .wav among the files: the devices vanished and nothing was ever written, so the app
     /// deletes the folder instead of finalizing.</summary>
     public static bool NoAudioFile(IEnumerable<string> files) =>
@@ -103,7 +98,7 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
         {
             sidecar.Participants = SidecarCalendar.ParticipantsOf(cal);
             // contract: source outlook, match (default time), status auto, candidates = other items nearby
-            sidecar.Calendar = SidecarCalendar.From(cal, CalendarCandidates?.Invoke(cal, r.Started));
+            sidecar.Calendar = SidecarCalendar.From(cal, cal.Candidates);
             Log.Info($"calendar: '{cal.Subject}' (by {cal.Match}), {cal.Attendees.Count} participants");
         }
         if (!(r.HeardSys || r.HeardMic))  // every buffer was digital silence: the device delivered nothing

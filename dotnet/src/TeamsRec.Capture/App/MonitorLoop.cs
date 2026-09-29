@@ -133,6 +133,10 @@ internal static class AppLogic
     /// <summary>What to do with a stopped recording before the finalizer: "delete" (aborted / too short) or "keep".</summary>
     public static bool Discard(string reason, double durationS) => reason == "aborted" || durationS < MinDurationS;
 
+    /// <summary>Teams window video (name tiles): a Teams call or a played-back Teams recording; not on site,
+    /// not a call in another app (as the prototype).</summary>
+    public static bool RecordsWindows(bool onsite, CallApp? callApp) => !onsite && callApp is null;
+
     /// <summary>Microphone of a new recording: on-site = the chosen / configured room mic, playback = none,
     /// a call = the one the call app records from (whatever the Windows default input is), else the default.</summary>
     public static string MicFor(bool onsite, bool playback, string? mic, string onsiteMic, Func<string?> callInputDevice) =>
@@ -158,7 +162,7 @@ public sealed class MonitorLoop : IDisposable
     private Recorder? _rec;
     private string _stemPath = "";
     private List<string> _files = [];
-    private ScreenCapture? _screen;
+    private ScreenCaptureProcess? _screen;
     private string _title = "";
     private HashSet<string> _titlesSeen = [];
     private bool _manual, _playback, _onsite, _noAudioWarned;
@@ -184,27 +188,7 @@ public sealed class MonitorLoop : IDisposable
         _notifier = notifier;
         _watchdog = new Watchdog(clock, notifier);
         _watchdog.Changed += Refresh;  // the icon turns yellow / red again right away
-        _finalizer = new Finalizer((at, title) => Outlook.Meeting(_cfg.UseOutlook, at, title), notifier, clock)
-        {
-            CalendarCandidates = CalendarCandidates,
-        };
-    }
-
-    /// <summary>Other meetings around the start for the review page (Python: outlook_meeting's candidates).
-    /// Never throws: a broken Outlook only loses the candidates.</summary>
-    private IEnumerable<CalendarItem> CalendarCandidates(CalendarItem cal, DateTime started)
-    {
-        if (!_cfg.UseOutlook)
-            return [];
-        try
-        {
-            return Outlook.CandidatesAt(Outlook.Items(started), started);
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"calendar candidates unavailable: {e.Message}");
-            return [];
-        }
+        _finalizer = new Finalizer((at, title) => Outlook.Meeting(_cfg.UseOutlook, at, title), notifier, clock);
     }
 
     public bool Recording { get { lock (_lock) return _rec is not null; } }
@@ -566,19 +550,18 @@ public sealed class MonitorLoop : IDisposable
             _continues = null;
             _callApp = callApp;
             _watchdog.Reset();
-            _calendar = playback ? null : Outlook.Meeting(_cfg.UseOutlook, now, title);
-            (_title, _titleSource) = AppLogic.ResolveTitle(title, manual, _calendar);
+            _calendar = null;  // looked up below, outside the lock (Outlook COM can take seconds)
+            (_title, _titleSource) = AppLogic.ResolveTitle(title, manual, null);
             _screen = null;
-            // Teams window video (name tiles -> who speaks when): Teams calls only, not on-site / other apps
-            if (!onsite && callApp is null && !playback)
+            // Teams window video (name tiles -> who speaks when); a played-back Teams recording shows them too
+            if (AppLogic.RecordsWindows(onsite, callApp))
             {
                 var ff = Mixer.FindFfmpeg();
                 if (ff is not null)
                 {
                     try
                     {
-                        // starts its own capture thread
-                        _screen = new ScreenCapture(stemPath, rec.Started, ff, WindowTitles.Teams);
+                        _screen = new ScreenCaptureProcess(stemPath, rec.Started);
                     }
                     catch (Exception e)
                     {
@@ -588,6 +571,18 @@ public sealed class MonitorLoop : IDisposable
                 }
                 else
                     Log.Warn("screen capture needs ffmpeg (not found), recording audio only");
+            }
+        }
+        if (!playback)
+        {
+            var cal = Outlook.Meeting(_cfg.UseOutlook, _clock.Now, title);
+            lock (_lock)
+            {
+                if (ReferenceEquals(_rec, started))  // not stopped meanwhile
+                {
+                    _calendar = cal;
+                    (_title, _titleSource) = AppLogic.ResolveTitle(title, manual, cal);
+                }
             }
         }
         Refresh();
@@ -602,9 +597,8 @@ public sealed class MonitorLoop : IDisposable
     {
         Recorder rec;
         string stemPath;
-        double dur;
-        List<string> files;
-        IReadOnlyList<ScreenInfo> screens;
+        List<string> recorded;
+        ScreenCaptureProcess? sc;
         RecordingInfo info;
         lock (_lock)
         {
@@ -614,22 +608,23 @@ public sealed class MonitorLoop : IDisposable
             stemPath = _stemPath;
             if (reason == "aborted")
                 _declined = true;  // discarded on purpose: do not start again until this call is over
-            dur = rec.Stop();
-            var sc = _screen;
+            sc = _screen;
             _screen = null;
-            screens = [];
-            if (sc is not null)
-            {
-                try { screens = sc.Stop(); }
-                catch (Exception e) { FileLog.Exception("screen capture stop", e); }
-            }
-            var dir = Path.GetDirectoryName(stemPath)!;
-            files = _files.Where(File.Exists).ToList();
-            files.AddRange(screens.Select(s => Path.Combine(dir, s.File)).Where(File.Exists));
+            recorded = _files.ToList();
             info = new RecordingInfo(_title, _calendar, _titleSource, new HashSet<string>(_titlesSeen), _continues,
                                      AppLogic.SourceOf(_onsite, _playback, _manual), _callApp?.App);
         }
-        Refresh();
+        Refresh();  // the tray is idle at once; closing the streams and the videos takes seconds, outside the lock
+        var dur = rec.Stop();
+        IReadOnlyList<ScreenInfo> screens = [];
+        if (sc is not null)
+        {
+            try { screens = sc.Stop(); }
+            catch (Exception e) { FileLog.Exception("screen capture stop", e); }
+        }
+        var dir = Path.GetDirectoryName(stemPath)!;
+        var files = recorded.Where(File.Exists).ToList();
+        files.AddRange(screens.Select(s => Path.Combine(dir, s.File)).Where(File.Exists));
         Log.Info($"STOP ({reason}) after {dur:F0}s");
         var stem = Path.GetFileName(stemPath);
         if (Finalizer.NoAudioFile(files))  // the devices vanished: nothing was ever written

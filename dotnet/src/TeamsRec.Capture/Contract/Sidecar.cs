@@ -255,7 +255,8 @@ public sealed class SidecarScreen
     public static SidecarScreen From(ScreenInfo s) => new()
     {
         File = s.File, Fps = s.Fps, Width = s.Width, Height = s.Height,
-        StartOffsetS = s.StartOffsetS, EndOffsetS = s.EndOffsetS, Frames = s.Frames, Titles = s.Titles.ToList(),
+        StartOffsetS = s.StartOffsetS, EndOffsetS = s.Recovered ? null : s.EndOffsetS, Frames = s.Frames,
+        Titles = s.Titles.ToList(), Recovered = s.Recovered ? true : null,
     };
 }
 

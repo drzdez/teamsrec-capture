@@ -2,6 +2,7 @@ using TeamsRec.Capture.App;
 using TeamsRec.Capture.Config;
 using TeamsRec.Capture.Core;
 using TeamsRec.Capture.Recording;
+using TeamsRec.Capture.Screen;
 
 namespace TeamsRec.Capture;
 
@@ -12,12 +13,16 @@ static class Program
     internal const string MutexName = @"Local\teamsrec-capture";
 
     [STAThread]
-    static int Main()
+    static int Main(string[] args)
     {
         var cfg = AppConfig.Load();
         Directory.CreateDirectory(cfg.OutDir);
         using var fileLog = new FileLog(Path.Combine(cfg.OutDir, "teamsrec.log"));
         Log.Sink = fileLog.Write;
+
+        // the window capture of a running recording, started by the app itself (ScreenCaptureProcess)
+        if (args.Length == 3 && args[0] == ScreenCaptureProcess.ChildArg)
+            return ScreenCaptureProcess.RunChild(args[1], args[2]);
 
         using var mutex = new Mutex(false, MutexName, out bool createdNew);
         if (!createdNew)

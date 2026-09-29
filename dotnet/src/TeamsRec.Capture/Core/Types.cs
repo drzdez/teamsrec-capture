@@ -39,13 +39,16 @@ public sealed record CaptureSession(string DeviceName, int ProcessId);
 /// <summary>A call running in an app other than Teams (contract: call_app).</summary>
 public sealed record CallApp(string App, string Id, string Title);
 
-/// <summary>A calendar item (Outlook). Match = "title" | "time" | "manual".</summary>
+/// <summary>A calendar item (Outlook). Match = "title" | "time" | "manual". Candidates = the other items near
+/// the time it was matched at (review page: re-link), looked up together with the match.</summary>
 public sealed record CalendarItem(string Subject, DateTime Start, DateTime End, string Organizer,
-                                  IReadOnlyList<string> Attendees, bool Teams, string Match = "");
+                                  IReadOnlyList<string> Attendees, bool Teams, string Match = "",
+                                  IReadOnlyList<CalendarItem>? Candidates = null);
 
-/// <summary>One captured Teams window video (contract: screens[]).</summary>
+/// <summary>One captured Teams window video (contract: screens[]). Recovered = found on disk after the capture
+/// process died without reporting (no end offset, frames -1).</summary>
 public sealed record ScreenInfo(string File, int Fps, int Width, int Height, double StartOffsetS,
-                                double EndOffsetS, int Frames, IReadOnlyList<string> Titles);
+                                double EndOffsetS, int Frames, IReadOnlyList<string> Titles, bool Recovered = false);
 
 /// <summary>What the recording was, captured at stop time (the next recording may start before the sidecar
 /// is written - Python: the `info` dict passed to _finalize).</summary>
@@ -58,7 +61,7 @@ public enum SourceKind { Live, Manual, Playback, Onsite }
 public static class Versions
 {
     public const string AppName = "teamsrec-capture";
-    public const string AppVersion = "1.0.0";
+    public const string AppVersion = "1.0.1";
     public const int FormatVersion = 1;
 }
 

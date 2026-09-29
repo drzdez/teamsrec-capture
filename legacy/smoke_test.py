@@ -371,18 +371,18 @@ def test_a_call_records_the_microphone_teams_uses():
         def start(self):
             return []  # the test stops right after the recorder was built
 
-    saved = (t.Recorder, t.teams_input_device, t.SCREEN_CAPTURE, t.outlook_meeting)
+    saved = (t.Recorder, t.call_input_device, t.SCREEN_CAPTURE, t.outlook_meeting)
     t.Recorder, t.SCREEN_CAPTURE, t.outlook_meeting = Rec, False, (lambda *a, **k: None)
     try:
-        t.teams_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
+        t.call_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
         app.start("Archi standup")
         assert seen["mic_name"] == "Sluchátka s mikrofonem (WH-1000XM6)" and not seen["mic_only"], seen
         app.rec = None
-        t.teams_input_device = lambda: None  # no session: the Windows default input, as before
+        t.call_input_device = lambda: None  # no session: the Windows default input, as before
         app.start("Archi standup")
         assert seen["mic_name"] == "", seen
     finally:
-        t.Recorder, t.teams_input_device, t.SCREEN_CAPTURE, t.outlook_meeting = saved
+        t.Recorder, t.call_input_device, t.SCREEN_CAPTURE, t.outlook_meeting = saved
         app.rec = None
         shutil.rmtree(TMP / f"{datetime.now():%Y}", ignore_errors=True)
 
@@ -399,8 +399,8 @@ def test_a_headset_switch_during_the_call_is_followed():
         return True
 
     app = app_with(rec)
-    saved = t.teams_input_device
-    t.teams_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
+    saved = t.call_input_device
+    t.call_input_device = lambda: "Sluchátka s mikrofonem (WH-1000XM6)"
     try:
         rec.reopen = lambda: reopen(True)
         app._follow_teams_mic(120)
@@ -420,7 +420,7 @@ def test_a_headset_switch_during_the_call_is_followed():
         app._follow_teams_mic(260)
         assert len(app.icon.notes) == n and rec.reopens == 2, "warned once, not every 30 s"
     finally:
-        t.teams_input_device = saved
+        t.call_input_device = saved
 
 
 def test_a_dead_microphone_raises_the_alarm_during_the_call():
@@ -438,6 +438,36 @@ def test_a_dead_microphone_raises_the_alarm_during_the_call():
     app2 = app_with(rec2)
     app2._audio_watchdog(300)
     assert not app2.audio_warned, app2.audio_warned
+
+
+def test_the_call_app_microphone_is_found_whichever_app_it_is():
+    me = os.getpid()
+    names = {100: "ms-teams.exe", 200: "zoom.exe", 300: "chrome.exe", 400: "voiceassistant.exe"}
+    saved = (t._process_name, t._is_teams_process)
+    t._process_name = lambda pid: names.get(pid, "")
+    t._is_teams_process = lambda pid: names.get(pid) == "ms-teams.exe"
+    try:
+        both = [("Pole mikrofonu", 400), ("Sluchátka (WH-1000XM6)", 100), ("Mikrofon (BT-W5)", 200)]
+        assert t.call_input_device(both) == "Sluchátka (WH-1000XM6)", "Teams wins"
+        assert t.call_input_device([("Pole mikrofonu", 400), ("Mikrofon (BT-W5)", 200)]) == "Mikrofon (BT-W5)",             "a known call app beats an unknown one"
+        assert t.call_input_device([("Headset (Meet v prohlížeči)", 300)]) == "Headset (Meet v prohlížeči)"
+        assert t.call_input_device([("Mikrofon (BT-W5)", me)]) is None, "our own recording is not a call"
+        assert t.call_input_device([("Mikrofon (BT-W5)", 0)]) is None, "system sessions are not a call"
+    finally:
+        t._process_name, t._is_teams_process = saved
+
+
+def test_a_dead_room_microphone_is_reported_on_site():
+    rec = FakeRec()
+    rec.mic_only = True
+    rec.tracks = {"mic": {"device": "Pole mikrofonu"}}
+    rec.last_mic_alive = time.time() - 200
+    app = app_with(rec)
+    app._audio_watchdog(300)
+    assert app.audio_warned and "Pole mikrofonu" in app.icon.notes[-1], app.icon.notes
+    rec.last_mic_alive = time.time()          # someone switched it on
+    app._audio_watchdog(310)
+    assert app.audio_warned is None and "už nahrává" in app.icon.notes[-1]
 
 
 def test_microphone_records():

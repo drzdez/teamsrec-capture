@@ -87,6 +87,20 @@
   </section>
 
   <section>
+    <h2>Hovory v jiných aplikacích</h2>
+    <div class="field">
+      <label class="name">Zoom, Webex, Slack, Discord, WhatsApp, Skype, Signal a schůzka v prohlížeči</label>
+      <div class="radios" id="other_apps">
+        <label><input type="radio" name="other_apps" value="record"><span>Nahrávat stejně jako Teams (od první vteřiny, oznámení v liště)</span></label>
+        <label><input type="radio" name="other_apps" value="off"><span>Nenahrávat – jen Teams</span></label>
+      </div>
+      <div class="hint">Prohlížeč se počítá jen s otevřenou schůzkou (Google Meet, Zoom, Webex, Teams na webu,
+        Jitsi, Whereby v názvu okna). Mikrofon se bere ten, který aplikace hovoru používá. Snímání oken a jmen
+        z dlaždic je jen pro Teams.</div>
+    </div>
+  </section>
+
+  <section>
     <h2>Hovory v Teams</h2>
     <div class="field">
       <label class="name">Na začátku hovoru</label>
@@ -195,6 +209,7 @@ async function load() {
   setRadio("device_missing", v.device_missing);
   setRadio("onsite_offer", v.onsite_offer);
   setRadio("prompt_default", v.prompt_default);
+  setRadio("other_apps", v.other_apps || "record");
   input("onsite_upgrade").checked = !!v.onsite_upgrade;
   input("calendar_outlook").checked = !!v.calendar_outlook;
   input("user_name").value = v.user_name || "";
@@ -208,6 +223,7 @@ async function save() {
     device_missing: getRadio("device_missing"),
     onsite_offer: getRadio("onsite_offer"),
     prompt_default: getRadio("prompt_default"),
+    other_apps: getRadio("other_apps"),
     onsite_upgrade: input("onsite_upgrade").checked,
     calendar_outlook: input("calendar_outlook").checked,
     user_name: input("user_name").value.trim(),

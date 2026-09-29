@@ -91,6 +91,8 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 | `origin_path` | string | ne | jen `import`: absolutní cesta k původnímu souboru v době importu |
 | `metadata_source` | enum | ne | jen `import`: odkud jsou `title` a `start`: `teams-name`, `container`, `file`, `user` |
 | `participants[]` | objekt | ne | z kalendáře, pokud dostupné; `role` ∈ `organizer`, `required`, `optional`, `self` |
+| `call_app` | string | ne | hovor mimo Teams: aplikace (`Zoom`, `Webex`, `Slack`, `WhatsApp`, `Chrome (Meet – …)` …); u Teams chybí |
+| `audio_purged` | datum | ne | zvuk a videa oken smazány (`purge-audio`); přepis, zápisy a jména zůstávají |
 | `audio_silent` | bool | ne | `true` = ve všech stopách bylo jen digitální ticho (zařízení nedodalo data); nahrávka se nepřepisuje |
 | `audio_reopens` | int | ne | kolikrát musel hlídač znovu otevřít zvukové streamy |
 | `teams_windows_seen[]` | string | ne | ladicí informace |
@@ -264,3 +266,9 @@ Ruční mapování po transkripci. Když existuje, export a summary používají
 ```json
 { "SPEAKER_00": "Jana Nováková", "SPEAKER_01": "Petr Svoboda", "me": "Jan Novák" }
 ```
+
+## Jazyk po mluvčích (přepis)
+
+`<stem>.transcript.json` má nahoře `language` (jazyk schůzky) a `languages` (všechny jazyky v přepisu).
+U smíšené schůzky může mít replika vlastní `segments[].language`, když její mluvčí jasně mluví jiným jazykem
+z nastavených (`[transcribe] per_speaker_language`); chybějící `language` u repliky = jazyk schůzky.

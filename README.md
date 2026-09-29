@@ -38,6 +38,14 @@ in. **Test microphone** records two seconds and reports the peak, so a room can 
 starts. The settings are written back into the shared TOML, keeping its comments, and take effect immediately
 (except `out_dir`).
 
+Calls outside Teams (0.9.0): when Zoom, Webex, Slack, Discord, WhatsApp, Skype or Signal takes the microphone, or a
+browser does while a meeting is open in it (Google Meet, Zoom/Webex/Teams on the web, Jitsi, Whereby in a window
+title), the call is recorded the same way - from the first second, with a tray notification, the microphone the app
+really uses, the title from the calendar or the window. It ends when the app lets go of the microphone. Window
+capture (names from the tiles) stays Teams-only. `other_apps = "off"` limits recording to Teams. Who holds the
+microphone comes from Windows' privacy registry; the recorder itself and other recorders (e.g. Read AI) are not
+counted as calls.
+
 Meetings that are not in Teams:
 
 - **Record on-site meeting** (tray) — the room microphone only, no loopback, no window capture.
@@ -85,6 +93,7 @@ onsite_mic = "Pole mikrofonu"  # on-site meetings (tray: Record on-site meeting)
 device_missing = "ask"       # that microphone is not available: ask (offer another one) | fail | fallback (default input)
 onsite_offer = "never"       # record a calendar meeting on site: never | calendar (only meetings without a Teams link) | always
 onsite_upgrade = true        # an on-site meeting that turns into a Teams call continues as a live recording
+other_apps = "record"        # calls in Zoom, Webex, Slack, Discord, WhatsApp, Skype, Signal and meetings in a browser: record | off
 prompt_default = "record"    # a call is recorded from its first second; record = only a tray notification (discard via the tray menu),
                              # ask = a "discard?" box that keeps the recording after 45 s, skip = the box discards it after 45 s
 ```

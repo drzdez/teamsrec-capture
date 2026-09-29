@@ -66,7 +66,7 @@ from PIL import Image, ImageDraw
 
 # ------------------------------------------------------------------ config
 APP_NAME = "teamsrec-prototype"
-APP_VERSION = "0.8.2"
+APP_VERSION = "0.9.0"
 FORMAT_VERSION = 1  # docs/recording-format.md
 
 
@@ -91,6 +91,7 @@ ONSITE_MIC = str(CONFIG.get("capture", {}).get("onsite_mic", "")).strip()  # par
 DEVICE_MISSING = str(CONFIG.get("capture", {}).get("device_missing", "ask"))   # ask | fail | fallback
 ONSITE_OFFER = str(CONFIG.get("capture", {}).get("onsite_offer", "never"))     # never | calendar | always
 ONSITE_UPGRADE = bool(CONFIG.get("capture", {}).get("onsite_upgrade", True))   # on-site meeting that turns into a Teams call
+OTHER_APPS = str(CONFIG.get("capture", {}).get("other_apps", "record"))         # record | off: calls outside Teams
 SILENCE_STOP_S = 30        # playback mode: stop after this much silence on the system track
 SILENCE_LEVEL = 300        # int16 peak below this counts as silence
 ALIVE_LEVEL = 8            # int16 peak: a working microphone always has room noise above this (~-72 dBFS);
@@ -262,6 +263,7 @@ SETTINGS_MAP = {
     "device_missing": ("capture", "device_missing", ("ask", "fail", "fallback")),
     "onsite_offer": ("capture", "onsite_offer", ("never", "calendar", "always")),
     "onsite_upgrade": ("capture", "onsite_upgrade", bool),
+    "other_apps": ("capture", "other_apps", ("record", "off")),
     "prompt_default": ("capture", "prompt_default", ("record", "ask", "skip")),
     "calendar_outlook": ("calendar", "outlook", bool),
     "user_name": ("user", "name", str),
@@ -270,13 +272,14 @@ SETTINGS_MAP = {
 
 def settings_values() -> dict:
     return {"onsite_mic": ONSITE_MIC, "device_missing": DEVICE_MISSING, "onsite_offer": ONSITE_OFFER,
-            "onsite_upgrade": ONSITE_UPGRADE, "prompt_default": PROMPT_DEFAULT,
+            "onsite_upgrade": ONSITE_UPGRADE, "other_apps": OTHER_APPS, "prompt_default": PROMPT_DEFAULT,
             "calendar_outlook": USE_OUTLOOK, "user_name": USER_NAME}
 
 
 def save_settings(values: dict) -> list[str]:
     """Validate the page's values, write them to the TOML and make them take effect right away."""
-    global ONSITE_MIC, DEVICE_MISSING, ONSITE_OFFER, ONSITE_UPGRADE, PROMPT_DEFAULT, USE_OUTLOOK, USER_NAME, CONFIG
+    global ONSITE_MIC, DEVICE_MISSING, ONSITE_OFFER, ONSITE_UPGRADE, OTHER_APPS, PROMPT_DEFAULT, USE_OUTLOOK
+    global USER_NAME, CONFIG
     changes: dict[str, dict] = {}
     clean: dict = {}
     for field, (sec, key, kind) in SETTINGS_MAP.items():
@@ -298,6 +301,7 @@ def save_settings(values: dict) -> list[str]:
     DEVICE_MISSING = clean.get("device_missing", DEVICE_MISSING)
     ONSITE_OFFER = clean.get("onsite_offer", ONSITE_OFFER)
     ONSITE_UPGRADE = clean.get("onsite_upgrade", ONSITE_UPGRADE)
+    OTHER_APPS = clean.get("other_apps", OTHER_APPS)
     PROMPT_DEFAULT = clean.get("prompt_default", PROMPT_DEFAULT)
     USE_OUTLOOK = clean.get("calendar_outlook", USE_OUTLOOK)
     USER_NAME = clean.get("user_name", USER_NAME)
@@ -383,6 +387,89 @@ def teams_mic_in_use() -> bool:
     except OSError as e:
         log.warning("registry read failed: %s", e)
     return False
+
+
+# ConsentStore identifier fragment (packaged app name or exe) -> the app a call runs in
+CALL_APP_IDS = {"zoom.exe": "Zoom", "webexmta.exe": "Webex", "ciscocollabhost.exe": "Webex", "atmgr.exe": "Webex",
+                "slack": "Slack", "discord.exe": "Discord", "whatsappdesktop": "WhatsApp", "whatsapp.exe": "WhatsApp",
+                "skype": "Skype", "signal.exe": "Signal"}
+BROWSERS = {"chrome.exe": "Chrome", "msedge.exe": "Edge", "firefox.exe": "Firefox", "brave.exe": "Brave",
+            "opera.exe": "Opera"}
+# a browser holding the microphone is a call only with one of these in a window title (dictation, a voice
+# search or a recorder in a tab is not)
+WEB_MEETING = re.compile(r"google meet|meet\.google\.com|^meet\s*[-–]|\bzoom\b|\bwebex\b|\bjitsi\b|whereby|"
+                         r"microsoft teams|\bteams\b", re.I)
+NOT_A_CALL = ("python.exe", "pythonw.exe")  # this recorder itself holds the microphone while it records
+
+
+def mic_users() -> set[str]:
+    """Apps holding the microphone right now according to Windows' privacy registry (LastUsedTimeStop == 0):
+    packaged app names and exe file names, lower case. This recorder itself is left out."""
+    out: set[str] = set()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CAM_KEY) as root:
+            candidates = [(root, n, n) for n in _subkeys(root) if n != "NonPackaged"]
+            try:
+                np_key = winreg.OpenKey(root, "NonPackaged")
+                candidates += [(np_key, n, n.split("#")[-1]) for n in _subkeys(np_key)]
+            except OSError:
+                pass
+            for parent, key, ident in candidates:
+                try:
+                    with winreg.OpenKey(parent, key) as k:
+                        start, _ = winreg.QueryValueEx(k, "LastUsedTimeStart")
+                        stop, _ = winreg.QueryValueEx(k, "LastUsedTimeStop")
+                except OSError:
+                    continue
+                ident = ident.lower()
+                if start and stop == 0 and ident not in NOT_A_CALL:
+                    out.add(ident)
+    except OSError as e:
+        log.warning("registry read failed: %s", e)
+    return out
+
+
+def app_window_titles(exe_names) -> list[str]:
+    """Titles of the visible windows of the processes with these exe names."""
+    want = {n.lower() for n in exe_names}
+    pids = {p.pid for p in psutil.process_iter(["name"]) if (p.info["name"] or "").lower() in want}
+    out: list[str] = []
+
+    def cb(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid in pids:
+                t = win32gui.GetWindowText(hwnd)
+                if t:
+                    out.append(t)
+    win32gui.EnumWindows(cb, None)
+    return out
+
+
+def _clean_web_title(title: str) -> str:
+    """'Meet – abc-defg-hij - Google Chrome' -> 'Meet – abc-defg-hij'."""
+    return re.sub(r"\s+[-–]\s+(google chrome|microsoft\u200b? edge|mozilla firefox|brave|opera)$", "", title,
+                  flags=re.I).strip()
+
+
+def other_call(users: set[str] | None = None, titles_of=None) -> dict | None:
+    """A call in an app other than Teams: {"app": "Zoom", "id": "zoom.exe", "title": ""}. Known call apps count
+    as soon as they hold the microphone; a browser only with a meeting in a window title. None otherwise."""
+    users = mic_users() if users is None else users
+    titles_of = titles_of or app_window_titles
+    if any("teams" in u for u in users):
+        return None  # Teams has its own path (join screen, window capture)
+    for ident in sorted(users):
+        for frag, app in CALL_APP_IDS.items():
+            if frag in ident:
+                return {"app": app, "id": ident, "title": ""}
+    for ident in sorted(users):
+        if ident in BROWSERS:
+            hits = [t for t in titles_of([ident]) if WEB_MEETING.search(t)]
+            if hits:
+                return {"app": f"{BROWSERS[ident]} ({_clean_web_title(hits[0])})", "id": ident,
+                        "title": _clean_web_title(hits[0])}
+    return None
 
 
 def teams_windows() -> list[tuple[int, str]]:
@@ -1280,7 +1367,7 @@ class App:
         if not self.rec:
             if self.prejoin_since:
                 return "Teams join screen — recording starts when you join"
-            return "Idle — waiting for a Teams call"
+            return "Idle — waiting for a call"
         m = int((datetime.now() - self.rec.started).total_seconds() // 60)
         return f"● REC {m} min — {self.title}"
 
@@ -1409,7 +1496,7 @@ class App:
 
     OFFER_WINDOW_S = 240   # a calendar meeting is offered from its start until this long after it
 
-    def start(self, title, manual=False, playback=False, onsite=False, mic=None):
+    def start(self, title, manual=False, playback=False, onsite=False, mic=None, call_app=None):
         with self.lock:
             if self.rec:
                 return
@@ -1444,6 +1531,7 @@ class App:
             self.titles_seen, self.call_missing_since, self.no_audio_warned = set(), None, False
             self.audio_warned, self.audio_warned_at = None, 0.0
             self.prejoin_since, self.continues = None, None
+            self.call_app = call_app  # None = Teams (or no call app: manual, on-site, playback)
             self.reopen_at, self.reopen_tries, self.next_reopen_at = None, 0, 0.0
             self.calendar = None if playback else outlook_meeting(now, title)
             self.title_source = "manual" if manual else ("window" if not is_generic_title(title) else "generic")
@@ -1451,7 +1539,7 @@ class App:
                 self.title = self.calendar["subject"]
                 self.title_source = "calendar"
             self.screen = None
-            ff = _ffmpeg() if SCREEN_CAPTURE and not onsite else None
+            ff = _ffmpeg() if SCREEN_CAPTURE and not onsite and not call_app else None  # name tiles: Teams only
             if ff:
                 try:
                     self.screen = ScreenCaptureProc(stem, rec.started)
@@ -1613,6 +1701,8 @@ class App:
             if not self.rec:
                 return
             rec, self.rec = self.rec, None
+            if reason == "aborted":
+                self.declined = True  # discarded on purpose: do not start again until this call is over
             dur = rec.stop()
             sc = getattr(self, "screen", None)
             screens = sc.stop() if sc else []
@@ -1623,6 +1713,7 @@ class App:
                 "title": self.title, "cal": getattr(self, "calendar", None),
                 "title_source": getattr(self, "title_source", "generic"),
                 "titles_seen": set(self.titles_seen), "continues": self.continues,
+                "call_app": (getattr(self, "call_app", None) or {}).get("app"),
                 "source": "onsite" if getattr(self, "onsite", False) else "playback" if self.playback
                 else "manual" if self.manual else "live",
             }
@@ -1753,6 +1844,8 @@ class App:
         }
         if info.get("continues"):  # this live recording took over from an on-site one
             meta["continues"] = info["continues"]
+        if info.get("call_app"):  # a call outside Teams
+            meta["call_app"] = info["call_app"]
         if mix:
             meta["mix"] = {"file": mix.name, "sample_rate": 16000, "channels": 1}
         if cal:
@@ -1790,6 +1883,9 @@ class App:
         while not self.quit.is_set():
             try:
                 in_call = teams_mic_in_use()
+                app = getattr(self, "call_app", None) if self.rec else None
+                if app:  # recording a call in another app: it lasts as long as that app holds the microphone
+                    in_call = app["id"] in mic_users()
                 if self.rec:
                     self.titles_seen.update(teams_window_titles())
                     elapsed = (datetime.now() - self.rec.started).total_seconds()
@@ -1836,10 +1932,21 @@ class App:
                                 self.icon.notify(f"Nahrávám: {title}. Zahodit lze z menu ikony v liště (Abort & delete).", "teamsrec")
                         else:
                             self.declined = True  # start failed (logged); do not retry until the call ends
+                    elif not in_call and OTHER_APPS == "record" and not self.declined and (oc := other_call()):
+                        cal = outlook_meeting(None, oc["title"] or None)
+                        title = (cal or {}).get("subject") or oc["title"] or f"{oc['app']} call"
+                        log.info("call in %s (%s) holds the microphone", oc["app"], oc["id"])
+                        self.start(title, call_app=oc)
+                        if self.rec:
+                            self.icon.notify(f"Nahrávám hovor v {oc['app']}: {title}. Zahodit lze z menu ikony "
+                                             f"(Abort & delete).", "teamsrec")
+                        else:
+                            self.declined = True
                     elif not in_call:
                         if ONSITE_OFFER != "never" and USE_OUTLOOK:
                             self._calendar_offer()
-                        self.declined = False
+                        if not (OTHER_APPS == "record" and other_call()):
+                            self.declined = False
                         if self.prejoin_since:  # the join dialog was closed without joining
                             log.info("Teams left the join screen without a call after %.0f s",
                                      time.time() - self.prejoin_since)

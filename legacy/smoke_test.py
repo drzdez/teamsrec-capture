@@ -470,6 +470,29 @@ def test_a_dead_room_microphone_is_reported_on_site():
     assert app.audio_warned is None and "už nahrává" in app.icon.notes[-1]
 
 
+def test_calls_in_other_apps_are_recognised():
+    titles = {"chrome.exe": ["Meet – abc-defg-hij - Google Chrome", "Inbox - Gmail - Google Chrome"],
+              "msedge.exe": ["YouTube - Microsoft​ Edge"]}
+    of = lambda exes: [t for e in exes for t in titles.get(e, [])]
+    assert t.other_call({"zoom.exe"}, of)["app"] == "Zoom"
+    assert t.other_call({"5319275a.whatsappdesktop_cv1g1gvanyjgm"}, of)["app"] == "WhatsApp"
+    web = t.other_call({"chrome.exe"}, of)
+    assert web and web["title"] == "Meet – abc-defg-hij" and web["id"] == "chrome.exe", web
+    assert t.other_call({"msedge.exe"}, of) is None, "a browser without a meeting is not a call (dictation, search)"
+    assert t.other_call({"read_ai_desktop.exe"}, of) is None, "another recorder is not a call"
+    assert t.other_call({"msteams_8wekyb3d8bbwe", "zoom.exe"}, of) is None, "Teams has its own path"
+    assert t.other_call(set(), of) is None
+
+
+def test_an_aborted_call_is_not_recorded_again_while_it_lasts():
+    app = app_with()
+    app.rec = type("R", (), {"stem": TMP / "abort" / "x", "reopens": 0, "heard_sys": True, "heard_mic": True,
+                             "started": datetime.now(), "stop": lambda self: 30.0, "tracks": {}})()
+    (TMP / "abort").mkdir(exist_ok=True)
+    app.stop("aborted")
+    assert app.declined is True
+
+
 def test_microphone_records():
     """Hardware: open the configured microphone and check that samples really arrive."""
     res = t.test_input(t.ONSITE_MIC, seconds=2.0)

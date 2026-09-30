@@ -38,6 +38,14 @@ public sealed class AppConfig
     /// <summary>[capture] other_apps: record | off - calls outside Teams.</summary>
     public string OtherApps { get; set; } = "record";
 
+    /// <summary>[capture] tray_open: what a double click on the tray icon opens - app = the review page's desktop
+    /// window, web = the same page in the default browser.</summary>
+    public string TrayOpen { get; set; } = "app";
+
+    /// <summary>[capture] review_app: teamsrec-review.exe (the desktop shell of teamsrec-transcribe); empty = the
+    /// usual install place, %LOCALAPPDATA%\Programs\teamsrec-review\teamsrec-review.exe.</summary>
+    public string ReviewApp { get; set; } = "";
+
     /// <summary>The file this config was loaded from (shown on the settings page, written by SettingsModel.Save).</summary>
     public string SourcePath { get; set; } = "";
 
@@ -78,7 +86,35 @@ public sealed class AppConfig
             OnsiteOffer = Str(Get(capture, "onsite_offer"), "never"),
             OnsiteUpgrade = Truthy(Get(capture, "onsite_upgrade"), true),
             OtherApps = Str(Get(capture, "other_apps"), "record"),
+            TrayOpen = Str(Get(capture, "tray_open"), "app"),
+            ReviewApp = Str(Get(capture, "review_app"), "").Trim(),
         };
+    }
+
+    /// <summary>Take over the settings that may change while the app runs (ConfigWatcher): everything but the
+    /// recordings folder and the source path. Returns the TOML names of what changed.</summary>
+    internal List<string> ApplyRuntime(AppConfig fresh)
+    {
+        var changed = new List<string>();
+        void Set<T>(string name, T now, T next, Action<T> apply)
+        {
+            if (EqualityComparer<T>.Default.Equals(now, next)) return;
+            apply(next);
+            changed.Add(name);
+        }
+        Set("calendar.outlook", UseOutlook, fresh.UseOutlook, v => UseOutlook = v);
+        Set("user.name", UserName, fresh.UserName, v => UserName = v);
+        Set("capture.prompt_default", PromptDefault, fresh.PromptDefault, v => PromptDefault = v);
+        Set("capture.onsite_mic", OnsiteMic, fresh.OnsiteMic, v => OnsiteMic = v);
+        Set("capture.device_missing", DeviceMissing, fresh.DeviceMissing, v => DeviceMissing = v);
+        Set("capture.onsite_offer", OnsiteOffer, fresh.OnsiteOffer, v => OnsiteOffer = v);
+        Set("capture.onsite_upgrade", OnsiteUpgrade, fresh.OnsiteUpgrade, v => OnsiteUpgrade = v);
+        Set("capture.other_apps", OtherApps, fresh.OtherApps, v => OtherApps = v);
+        Set("capture.tray_open", TrayOpen, fresh.TrayOpen, v => TrayOpen = v);
+        Set("capture.review_app", ReviewApp, fresh.ReviewApp, v => ReviewApp = v);
+        if (fresh.OutDir != OutDir)
+            Log.Info($"recordings folder changed to {fresh.OutDir}: used after the next start");
+        return changed;
     }
 
     /// <summary>Parse TOML text into an untyped table (also used by tests to check what was written).</summary>

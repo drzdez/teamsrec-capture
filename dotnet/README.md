@@ -116,7 +116,7 @@ dotnet/
 
 ## Current status (2026-09-29)
 
-- It builds with 0 warnings and 0 errors, and all 160 tests pass. Every module of the prototype is ported
+- It builds with 0 warnings and 0 errors, and all 162 tests pass. Every module of the prototype is ported
   except the post-recording hook (unused in the prototype) and the dead Tk prompt.
 - The smoke run with the prototype holding the mutex exited cleanly ("already running").
 - **Not yet run on real hardware.** Fixed after the parity review (2026-09-29): the app no longer counts
@@ -124,3 +124,8 @@ dotnet/
   per-monitor-v2 DPI aware. Then, like the prototype: window capture in a child process, the tray never waits
   for a recording to stop, window video for playback too, calendar candidates at the start, and no silence
   stream on the default output (PARITY.md gaps 4-8).
+- 1.0.2: edits of teamsrec.toml (for example from the settings page of teamsrec-transcribe) apply without a
+  restart (`Config/ConfigWatcher.cs`); only a new recordings folder waits for the next start.
+- 1.0.3: a double click on the tray icon (or the bold "Otevřít přepisy" in its menu) opens the review page of
+  teamsrec-transcribe, in its desktop window or in the browser as `[capture] tray_open` (`app` | `web`) says, through
+  `teamsrec-review.exe` (`[capture] review_app` if it is not in the usual place).

@@ -21,6 +21,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private readonly NotifyIcon _icon;
     private readonly MonitorLoop _loop;
     private readonly SettingsServer _settings;
+    private readonly ConfigWatcher _watcher;  // edits from the review page's settings apply without a restart
     private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort;
 
     public TrayApp(AppConfig cfg, IClock clock)
@@ -33,6 +34,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         _loop = new MonitorLoop(cfg, clock, this);
         _loop.Changed += () => OnUi(RefreshIcon);
         _settings = new SettingsServer(cfg, () => _loop.Recording);
+        _watcher = new ConfigWatcher(cfg);
 
         _status = new ToolStripMenuItem("Idle — waiting for a call") { Enabled = false };
         _manual = new ToolStripMenuItem("Record now (manual)", null, (_, _) => _loop.StartManual());
@@ -41,13 +43,18 @@ public sealed class TrayApp : ApplicationContext, INotifier
         _stopKeep = new ToolStripMenuItem("Stop & keep", null, (_, _) => _loop.StopAsync("tray stop"));
         _abort = new ToolStripMenuItem("Abort & delete", null, (_, _) => _loop.StopAsync("aborted"));
         _test = new ToolStripMenuItem("Test microphone", null, (_, _) => _loop.TestMicrophone());
+        var review = new ToolStripMenuItem("Otevřít přepisy", null, (_, _) => OpenReview())
+        {
+            Font = new Font(SystemFonts.MenuFont ?? Control.DefaultFont, FontStyle.Bold),  // the double-click action
+            ToolTipText = "stránka kontroly přepisů, zápisů a nastavení (poklepání na ikonu)",
+        };
         var settings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings());
         var folder = new ToolStripMenuItem("Open folder", null, (_, _) => OpenFolder());
         var quit = new ToolStripMenuItem("Quit", null, (_, _) => Quit());
 
         var menu = new ContextMenuStrip();
-        menu.Items.AddRange(new ToolStripItem[] { _status, new ToolStripSeparator(), _manual, _onsite, _playback, _stopKeep, _abort,
-                             _test, settings, folder, quit });
+        menu.Items.AddRange(new ToolStripItem[] { _status, new ToolStripSeparator(), review, new ToolStripSeparator(),
+                             _manual, _onsite, _playback, _stopKeep, _abort, _test, settings, folder, quit });
         menu.Opening += (_, _) => UpdateMenu();
 
         _icon = new NotifyIcon
@@ -57,6 +64,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
             ContextMenuStrip = menu,
             Visible = true,
         };
+        _icon.DoubleClick += (_, _) => OpenReview();
         _loop.Run();
     }
 
@@ -133,6 +141,27 @@ public sealed class TrayApp : ApplicationContext, INotifier
         }
     }
 
+    /// <summary>The review page (teamsrec-transcribe) in its desktop window or in the browser, as tray_open says.</summary>
+    private void OpenReview()
+    {
+        var (exe, args) = AppLogic.ReviewLaunch(_cfg.TrayOpen, _cfg.ReviewApp,
+                                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        if (!File.Exists(exe))
+        {
+            Notify($"Aplikace pro přepisy není nainstalovaná ({exe}). Nastavte [capture] review_app.");
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! });
+        }
+        catch (Exception e)
+        {
+            FileLog.Exception("open review", e);
+            Notify($"Přepisy se nepodařilo otevřít: {e.Message}");
+        }
+    }
+
     private void OpenFolder()
     {
         try
@@ -183,6 +212,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         {
             _icon.Visible = false;
             _icon.Dispose();
+            _watcher.Dispose();
             _settings.Dispose();
             _loop.Dispose();
             _ui.Dispose();

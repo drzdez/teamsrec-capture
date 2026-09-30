@@ -133,6 +133,13 @@ internal static class AppLogic
     /// <summary>What to do with a stopped recording before the finalizer: "delete" (aborted / too short) or "keep".</summary>
     public static bool Discard(string reason, double durationS) => reason == "aborted" || durationS < MinDurationS;
 
+    /// <summary>How the tray opens the review page: (exe, arguments). tray_open = web -> "--browser" (the page in
+    /// the default browser), anything else -> the desktop window. The exe is review_app, or the usual install place
+    /// under localAppData.</summary>
+    public static (string Exe, string Args) ReviewLaunch(string trayOpen, string reviewApp, string localAppData) =>
+        (reviewApp.Length > 0 ? reviewApp : Path.Combine(localAppData, "Programs", "teamsrec-review", "teamsrec-review.exe"),
+         trayOpen == "web" ? "--browser" : "");
+
     /// <summary>Teams window video (name tiles): a Teams call or a played-back Teams recording; not on site,
     /// not a call in another app (as the prototype).</summary>
     public static bool RecordsWindows(bool onsite, CallApp? callApp) => !onsite && callApp is null;

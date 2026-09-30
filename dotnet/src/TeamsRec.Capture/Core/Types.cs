@@ -61,7 +61,7 @@ public enum SourceKind { Live, Manual, Playback, Onsite }
 public static class Versions
 {
     public const string AppName = "teamsrec-capture";
-    public const string AppVersion = "1.0.1";
+    public const string AppVersion = "1.0.3";
     public const int FormatVersion = 1;
 }
 

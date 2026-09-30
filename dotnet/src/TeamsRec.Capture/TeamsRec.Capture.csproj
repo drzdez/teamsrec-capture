@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>TeamsRec.Capture</RootNamespace>
     <AssemblyName>teamsrec-capture</AssemblyName>
-    <Version>1.0.3</Version>
+    <Version>1.0.5</Version>
     <InvariantGlobalization>false</InvariantGlobalization>
     <!-- window capture measures and grabs in physical pixels on every monitor, whatever its scale -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>

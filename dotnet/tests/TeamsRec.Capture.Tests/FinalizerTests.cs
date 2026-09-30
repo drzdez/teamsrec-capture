@@ -19,7 +19,9 @@ public sealed class FinalizerTests : IDisposable
     private sealed class FakeNotifier : INotifier
     {
         public List<string> Messages { get; } = [];
+        public List<string> Stems { get; } = [];
         public void Notify(string message) => Messages.Add(message);
+        public void NotifyRecording(string message, string stem) { Messages.Add(message); Stems.Add(stem); }
         public void Beep(bool error = false) { }
     }
 
@@ -102,6 +104,7 @@ public sealed class FinalizerTests : IDisposable
         Assert.Equal(600, meta.GetProperty("duration_s").GetInt32());
         Assert.True(meta.GetProperty("tracks").TryGetProperty("mic", out _));
         Assert.Contains(n.Messages, m => m == "Saved 2026-09-25_0900_prvni-cast (10 min)");
+        Assert.Contains("2026-09-25_0900_prvni-cast", n.Stems);  // a click on the balloon opens this recording
 
         json = fin.Finalize(Stopped(stem, wav, 60.0, false, true, started), "call ended",
                             Info("Druhá část", "live", continues: Path.GetFileName(stem)));

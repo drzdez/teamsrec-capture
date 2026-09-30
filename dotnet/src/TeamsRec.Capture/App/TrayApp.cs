@@ -21,7 +21,8 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private readonly NotifyIcon _icon;
     private readonly MonitorLoop _loop;
     private readonly SettingsServer _settings;
-    private readonly ConfigWatcher _watcher;  // edits from the review page's settings apply without a restart
+    private readonly ConfigWatcher _watcher;
+    private string? _balloonStem;  // the recording the balloon on screen is about (UI thread only)  // edits from the review page's settings apply without a restart
     private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort;
 
     public TrayApp(AppConfig cfg, IClock clock)
@@ -48,7 +49,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
             Font = new Font(SystemFonts.MenuFont ?? Control.DefaultFont, FontStyle.Bold),  // the double-click action
             ToolTipText = "stránka kontroly přepisů, zápisů a nastavení (poklepání na ikonu)",
         };
-        var settings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings());
+        var settings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenReview(settings: true));
         var folder = new ToolStripMenuItem("Open folder", null, (_, _) => OpenFolder());
         var quit = new ToolStripMenuItem("Quit", null, (_, _) => Quit());
 
@@ -65,6 +66,8 @@ public sealed class TrayApp : ApplicationContext, INotifier
             Visible = true,
         };
         _icon.DoubleClick += (_, _) => OpenReview();
+        // a click on a balloon opens the review page, on the recording it was about ("Saved …")
+        _icon.BalloonTipClicked += (_, _) => OpenReview(stem: _balloonStem);
         _loop.Run();
     }
 
@@ -73,7 +76,20 @@ public sealed class TrayApp : ApplicationContext, INotifier
     // ------------------------------------------------------------------ INotifier
     public void Notify(string message)
     {
-        OnUi(() => _icon.ShowBalloonTip(5000, "teamsrec", message, ToolTipIcon.None));
+        OnUi(() =>
+        {
+            _balloonStem = null;
+            _icon.ShowBalloonTip(5000, "teamsrec", message, ToolTipIcon.None);
+        });
+    }
+
+    public void NotifyRecording(string message, string stem)
+    {
+        OnUi(() =>
+        {
+            _balloonStem = stem;
+            _icon.ShowBalloonTip(8000, "teamsrec – kliknutím otevřete", message, ToolTipIcon.None);
+        });
     }
 
     public void Beep(bool error = false)
@@ -142,12 +158,18 @@ public sealed class TrayApp : ApplicationContext, INotifier
     }
 
     /// <summary>The review page (teamsrec-transcribe) in its desktop window or in the browser, as tray_open says.</summary>
-    private void OpenReview()
+    private void OpenReview(bool settings = false, string? stem = null)
     {
         var (exe, args) = AppLogic.ReviewLaunch(_cfg.TrayOpen, _cfg.ReviewApp,
-                                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+                                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                                settings, stem);
         if (!File.Exists(exe))
         {
+            if (settings)
+            {
+                OpenSettings();  // no review app on this PC: the capture app's own page (its fields only)
+                return;
+            }
             Notify($"Aplikace pro přepisy není nainstalovaná ({exe}). Nastavte [capture] review_app.");
             return;
         }

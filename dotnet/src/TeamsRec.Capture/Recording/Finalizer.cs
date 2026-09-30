@@ -121,7 +121,7 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
         if (sidecar.AudioSilent == true)
             notifier.Notify($"{stemName}: žádný zvuk (zařízení nedodalo data), nahrávka se nebude zpracovávat.");
         else
-            notifier.Notify($"Saved {stemName} ({Math.Round(r.DurationS / 60)} min)");
+            notifier.NotifyRecording($"Saved {stemName} ({Math.Round(r.DurationS / 60)} min)", stemName);
         return jpath;
     }
 

@@ -21,6 +21,10 @@ public sealed class SystemClock : IClock
 public interface INotifier
 {
     void Notify(string message);
+
+    /// <summary>A message about one recording: the tray opens that recording on the review page when the balloon is
+    /// clicked. Without a tray (tests) it is a plain message.</summary>
+    void NotifyRecording(string message, string stem) => Notify(message);
     void Beep(bool error = false);
 }
 
@@ -61,7 +65,7 @@ public enum SourceKind { Live, Manual, Playback, Onsite }
 public static class Versions
 {
     public const string AppName = "teamsrec-capture";
-    public const string AppVersion = "1.0.3";
+    public const string AppVersion = "1.0.5";
     public const int FormatVersion = 1;
 }
 

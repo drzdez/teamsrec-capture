@@ -134,11 +134,34 @@ internal static class AppLogic
     public static bool Discard(string reason, double durationS) => reason == "aborted" || durationS < MinDurationS;
 
     /// <summary>How the tray opens the review page: (exe, arguments). tray_open = web -> "--browser" (the page in
-    /// the default browser), anything else -> the desktop window. The exe is review_app, or the usual install place
-    /// under localAppData.</summary>
-    public static (string Exe, string Args) ReviewLaunch(string trayOpen, string reviewApp, string localAppData) =>
+    /// the default browser), anything else -> the desktop window; settings -> "--settings" (its Nastavení, the one
+    /// settings page of both apps). The exe is review_app, or the usual install place under localAppData.</summary>
+    public static (string Exe, string Args) ReviewLaunch(string trayOpen, string reviewApp, string localAppData,
+                                                          bool settings = false, string? stem = null) =>
         (reviewApp.Length > 0 ? reviewApp : Path.Combine(localAppData, "Programs", "teamsrec-review", "teamsrec-review.exe"),
-         trayOpen == "web" ? "--browser" : "");
+         string.Join(" ", new[] { trayOpen == "web" ? "--browser" : "", settings ? "--settings" : "",
+                                  IsStem(stem) ? $"--open {stem}" : "" }.Where(a => a.Length > 0)));
+
+    /// <summary>%TEMP%\teamsrec-capture.json: what the capture app is doing, for the review page (red dot while a
+    /// recording runs). The pid lets a reader tell a crashed app from a running one.</summary>
+    public static string CaptureStatusPath => Path.Combine(Path.GetTempPath(), "teamsrec-capture.json");
+
+    public static string CaptureStatusJson(bool running, bool recording, string? title, string? stem, string? source,
+                                           DateTime? started, DateTime now)
+    {
+        var on = running && recording;  // a quitting app records nothing, whatever it was doing
+        return System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["app"] = Versions.AppName, ["version"] = Versions.AppVersion, ["pid"] = Environment.ProcessId,
+            ["running"] = running, ["recording"] = on,
+            ["title"] = on ? title : null, ["stem"] = on ? stem : null, ["source"] = on ? source : null,
+            ["started"] = on ? started?.ToString("s") : null, ["updated"] = now.ToString("s"),
+        });
+    }
+
+    /// <summary>A recording stem as the capture app makes them (date_time_slug): safe on a command line.</summary>
+    private static bool IsStem(string? s) =>
+        !string.IsNullOrEmpty(s) && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
 
     /// <summary>Teams window video (name tiles): a Teams call or a played-back Teams recording; not on site,
     /// not a call in another app (as the prototype).</summary>
@@ -214,11 +237,39 @@ public sealed class MonitorLoop : IDisposable
         }
     }
 
-    private void Refresh() => Changed?.Invoke();
+    private void Refresh()
+    {
+        WriteCaptureStatus();
+        Changed?.Invoke();
+    }
+
+    /// <summary>Tell the review page what runs (AppLogic.CaptureStatusPath); never fails the caller.</summary>
+    private void WriteCaptureStatus(bool running = true)
+    {
+        try
+        {
+            string json;
+            lock (_lock)
+            {
+                var rec = _rec;
+                json = AppLogic.CaptureStatusJson(running, rec is not null, _title, rec is null ? null : Path.GetFileName(_stemPath),
+                                                  rec is null ? null : AppLogic.SourceOf(_onsite, _playback, _manual),
+                                                  rec?.Started, _clock.Now);
+            }
+            var path = AppLogic.CaptureStatusPath;
+            File.WriteAllText(path + ".tmp", json);
+            File.Move(path + ".tmp", path, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"capture status not written: {e.Message}");
+        }
+    }
 
     // ------------------------------------------------------------------ loop
     public void Run()
     {
+        WriteCaptureStatus();  // running, not recording
         _thread = new Thread(Loop) { IsBackground = true, Name = "teamsrec-monitor" };
         // STA: Outlook COM and window enumeration behave best on an STA thread, like the Python thread with pywin32
         _thread.SetApartmentState(ApartmentState.STA);
@@ -685,6 +736,7 @@ public sealed class MonitorLoop : IDisposable
     {
         _quit.Set();
         Stop("quit");
+        WriteCaptureStatus(running: false);
     }
 
     /// <summary>Wait for sidecars still being written, so Quit does not leave a half-finished recording behind

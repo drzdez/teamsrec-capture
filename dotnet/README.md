@@ -116,7 +116,7 @@ dotnet/
 
 ## Current status (2026-09-29)
 
-- It builds with 0 warnings and 0 errors, and all 162 tests pass. Every module of the prototype is ported
+- It builds with 0 warnings and 0 errors, and all 163 tests pass. Every module of the prototype is ported
   except the post-recording hook (unused in the prototype) and the dead Tk prompt.
 - The smoke run with the prototype holding the mutex exited cleanly ("already running").
 - **Not yet run on real hardware.** Fixed after the parity review (2026-09-29): the app no longer counts
@@ -129,3 +129,8 @@ dotnet/
 - 1.0.3: a double click on the tray icon (or the bold "Otevřít přepisy" in its menu) opens the review page of
   teamsrec-transcribe, in its desktop window or in the browser as `[capture] tray_open` (`app` | `web`) says, through
   `teamsrec-review.exe` (`[capture] review_app` if it is not in the usual place).
+- 1.0.4: "Settings…" in the tray menu opens the same Nastavení as the review page (one settings page for both apps,
+  with the Windows sound button); the app's own settings page is only the fallback without teamsrec-review.exe.
+- 1.0.5: a click on the "Saved …" balloon opens the review page on that recording (`--open <stem>`); a click on
+  any other balloon opens the page. It also writes `%TEMP%	eamsrec-capture.json` (recording or not, title, start, pid) on every
+  change, so the review page shows a red dot "Nahrávání probíhá" while it records.

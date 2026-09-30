@@ -40,8 +40,32 @@ public class ConfigWatcherTests
         var app = Path.Combine(local, "Programs", "teamsrec-review", "teamsrec-review.exe");
         Assert.Equal((app, ""), App.AppLogic.ReviewLaunch("app", "", local));
         Assert.Equal((app, "--browser"), App.AppLogic.ReviewLaunch("web", "", local));
+        Assert.Equal((app, "--settings"), App.AppLogic.ReviewLaunch("app", "", local, settings: true));
+        Assert.Equal((app, "--browser --settings"), App.AppLogic.ReviewLaunch("web", "", local, settings: true));
+        Assert.Equal((app, "--open 2026-09-30_1827_zina"), App.AppLogic.ReviewLaunch("app", "", local, stem: "2026-09-30_1827_zina"));
+        Assert.Equal((app, "--browser --open 2026-09-30_1827_zina"),
+                     App.AppLogic.ReviewLaunch("web", "", local, stem: "2026-09-30_1827_zina"));
+        Assert.Equal((app, ""), App.AppLogic.ReviewLaunch("app", "", local, stem: "x\" & calc"));  // no command-line tricks
         Assert.Equal((@"D:\tools\review.exe", ""), App.AppLogic.ReviewLaunch("app", @"D:\tools\review.exe", local));
         var cfg = AppConfig.Load(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.toml"));
         Assert.Equal(("app", ""), (cfg.TrayOpen, cfg.ReviewApp));
+    }
+
+    [Fact]
+    public void The_capture_status_tells_the_review_page_what_is_recorded()
+    {
+        var now = new DateTime(2026, 9, 30, 18, 30, 0);
+        using var on = System.Text.Json.JsonDocument.Parse(App.AppLogic.CaptureStatusJson(
+            true, true, "Plánování", "2026-09-30_1827_planovani", "onsite", new DateTime(2026, 9, 30, 18, 27, 5), now));
+        var r = on.RootElement;
+        Assert.True(r.GetProperty("recording").GetBoolean());
+        Assert.Equal(("Plánování", "2026-09-30_1827_planovani", "onsite", "2026-09-30T18:27:05"),
+                     (r.GetProperty("title").GetString(), r.GetProperty("stem").GetString(),
+                      r.GetProperty("source").GetString(), r.GetProperty("started").GetString()));
+        Assert.Equal(Environment.ProcessId, r.GetProperty("pid").GetInt32());
+        using var off = System.Text.Json.JsonDocument.Parse(App.AppLogic.CaptureStatusJson(
+            false, true, "x", "y", "live", now, now));
+        Assert.False(off.RootElement.GetProperty("recording").GetBoolean(), "a quitting app records nothing");
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, off.RootElement.GetProperty("title").ValueKind);
     }
 }

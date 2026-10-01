@@ -49,6 +49,9 @@ public sealed class AppConfig
     /// usual install place, %LOCALAPPDATA%\Programs\teamsrec-review\teamsrec-review.exe.</summary>
     public string ReviewApp { get; set; } = "";
 
+    /// <summary>[capture] update_check: once a day look for a newer release on GitHub and offer to install it.</summary>
+    public bool UpdateCheck { get; set; } = true;
+
     /// <summary>The file this config was loaded from (shown on the settings page, written by SettingsModel.Save).</summary>
     public string SourcePath { get; set; } = "";
 
@@ -91,6 +94,7 @@ public sealed class AppConfig
             OtherApps = Str(Get(capture, "other_apps"), "record"),
             TrayOpen = Str(Get(capture, "tray_open"), "app"),
             ReviewApp = Str(Get(capture, "review_app"), "").Trim(),
+            UpdateCheck = Truthy(Get(capture, "update_check"), true),
         };
     }
 
@@ -115,6 +119,7 @@ public sealed class AppConfig
         Set("capture.other_apps", OtherApps, fresh.OtherApps, v => OtherApps = v);
         Set("capture.tray_open", TrayOpen, fresh.TrayOpen, v => TrayOpen = v);
         Set("capture.review_app", ReviewApp, fresh.ReviewApp, v => ReviewApp = v);
+        Set("capture.update_check", UpdateCheck, fresh.UpdateCheck, v => UpdateCheck = v);
         if (fresh.OutDir != OutDir)
             Log.Info($"recordings folder changed to {fresh.OutDir}: used after the next start");
         return changed;

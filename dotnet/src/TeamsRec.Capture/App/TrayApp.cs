@@ -24,8 +24,11 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private readonly ConfigWatcher _watcher;  // edits from the review page's settings apply without a restart
     private readonly FileSystemWatcher? _quitRequest;  // the installer asks to quit before replacing the files
     private bool _quitting;
+    private readonly Updater _updater;
+    private Release? _balloonUpdate;  // the balloon on screen offers this release (a click installs it)
+    private Release? _offerAfterRecording;  // found during a recording: offered when it ends
     private string? _balloonStem;  // the recording the balloon on screen is about (UI thread only)
-    private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort;
+    private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort, _update;
 
     public TrayApp(AppConfig cfg, IClock clock)
     {
@@ -54,11 +57,18 @@ public sealed class TrayApp : ApplicationContext, INotifier
         };
         var settings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenReview(settings: true));
         var folder = new ToolStripMenuItem("Open folder", null, (_, _) => OpenFolder());
+        _update = new ToolStripMenuItem("", null, (_, _) => { if (_updater?.Available is { } r) InstallUpdate(r); })
+        {
+            Visible = false,
+            Font = new Font(SystemFonts.MenuFont ?? Control.DefaultFont, FontStyle.Bold),
+        };
+        var checkUpdate = new ToolStripMenuItem("Check for updates", null, (_, _) => CheckUpdatesNow());
         var quit = new ToolStripMenuItem("Quit", null, (_, _) => Quit());
 
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(new ToolStripItem[] { _status, new ToolStripSeparator(), review, new ToolStripSeparator(),
-                             _manual, _onsite, _playback, _stopKeep, _abort, _test, settings, folder, quit });
+                             _manual, _onsite, _playback, _stopKeep, _abort, _test, settings, folder,
+                             new ToolStripSeparator(), _update, checkUpdate, quit });
         menu.Opening += (_, _) => UpdateMenu();
 
         _icon = new NotifyIcon
@@ -70,7 +80,14 @@ public sealed class TrayApp : ApplicationContext, INotifier
         };
         _icon.DoubleClick += (_, _) => OpenReview();
         // a click on a balloon opens the review page, on the recording it was about ("Saved …")
-        _icon.BalloonTipClicked += (_, _) => OpenReview(stem: _balloonStem);
+        _icon.BalloonTipClicked += (_, _) =>
+        {
+            if (_balloonUpdate is { } rel)
+                InstallUpdate(rel);
+            else
+                OpenReview(stem: _balloonStem);
+        };
+        _updater = new Updater(cfg, rel => OnUi(() => OnUpdateFound(rel)));
         _loop.Run();
     }
 
@@ -82,6 +99,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         OnUi(() =>
         {
             _balloonStem = null;
+            _balloonUpdate = null;
             _icon.ShowBalloonTip(5000, "teamsrec", message, ToolTipIcon.None);
         });
     }
@@ -91,6 +109,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         OnUi(() =>
         {
             _balloonStem = stem;
+            _balloonUpdate = null;
             _icon.ShowBalloonTip(8000, "teamsrec – kliknutím otevřete", message, ToolTipIcon.None);
         });
     }
@@ -126,6 +145,11 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private void RefreshIcon()
     {
         bool rec = _loop.Recording;
+        if (!rec && _offerAfterRecording is { } offer)
+        {
+            _offerAfterRecording = null;
+            ShowUpdateBalloon(offer);
+        }
         _icon.Icon = rec ? (string.IsNullOrEmpty(_loop.AudioWarned) ? IconRec : IconWarn) : IconIdle;
         _icon.Text = AppLogic.Tooltip(_loop.Status());
     }
@@ -200,6 +224,78 @@ public sealed class TrayApp : ApplicationContext, INotifier
         }
     }
 
+    // ------------------------------------------------------------------ updates
+    /// <summary>A newer release (UI thread): the menu item always, the balloon unless declined; never during a
+    /// recording, then right after it.</summary>
+    private void OnUpdateFound(Release rel)
+    {
+        _update.Text = $"Install version {rel.Version}…";
+        _update.Visible = true;
+        if (Updater.Declined == rel.Version)
+            return;
+        if (_loop.Recording)
+            _offerAfterRecording = rel;
+        else
+            ShowUpdateBalloon(rel);
+    }
+
+    private void ShowUpdateBalloon(Release rel)
+    {
+        _balloonStem = null;
+        _balloonUpdate = rel;
+        _icon.ShowBalloonTip(10000, "teamsrec – nová verze",
+                             $"Je k dispozici teamsrec-capture {rel.Version} (máte {Versions.AppVersion}). Kliknutím nainstalujete.",
+                             ToolTipIcon.Info);
+    }
+
+    /// <summary>"Check for updates" in the menu: works with update_check off too, and offers a declined version again.</summary>
+    private void CheckUpdatesNow()
+    {
+        Task.Run(async () =>
+        {
+            var rel = await _updater.CheckAsync();
+            if (rel is null)
+                Notify($"Novější verze není k dispozici (máte {Versions.AppVersion}), nebo se ji nepodařilo zjistit.");
+            else
+                OnUi(() => ShowUpdateBalloon(rel));
+        });
+    }
+
+    /// <summary>Confirm, download, verify, run the MSI (which quits this app and starts the new one). Not while
+    /// recording: the install would have to stop it.</summary>
+    private void InstallUpdate(Release rel)
+    {
+        if (_loop.Recording)
+        {
+            Notify("Novou verzi nainstalujte po skončení nahrávání (menu ikony).");
+            return;
+        }
+        Task.Run(async () =>
+        {
+            if (!Dialogs.YesNo($"Nainstalovat teamsrec-capture {rel.Version}? Teď máte {Versions.AppVersion}.\n\n" +
+                               "Aplikace se na chvíli ukončí a po instalaci se znovu spustí.", timeoutS: 120))
+            {
+                Updater.Declined = rel.Version;
+                return;
+            }
+            if (_loop.Recording)  // a call may have started while the box was open
+            {
+                Notify("Nahrávání právě začalo – novou verzi nainstalujte po něm (menu ikony).");
+                return;
+            }
+            Notify($"Stahuji teamsrec-capture {rel.Version}…");
+            try
+            {
+                await Updater.InstallAsync(rel);
+            }
+            catch (Exception e)
+            {
+                FileLog.Exception("update install", e);
+                Notify($"Novou verzi se nepodařilo nainstalovat: {e.Message}");
+            }
+        });
+    }
+
     /// <summary>The installer wants to replace the files. Never in the middle of a recording: the install then
     /// fails with a message and can be run again after the meeting.</summary>
     private void OnQuitRequest()
@@ -256,6 +352,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
             _icon.Dispose();
             _watcher.Dispose();
             _quitRequest?.Dispose();
+            _updater.Dispose();
             _settings.Dispose();
             _loop.Dispose();
             _ui.Dispose();

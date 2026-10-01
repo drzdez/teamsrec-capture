@@ -33,7 +33,7 @@ dotnet build TeamsRec.Capture.slnx
 dotnet test  TeamsRec.Capture.slnx
 ```
 
-The tests (xUnit, 165 of them) cover the pure logic: detection rules, calendar matching, watchdog/backoff,
+The tests (xUnit, 175 of them) cover the pure logic: detection rules, calendar matching, watchdog/backoff,
 sidecar format, naming and rename, the TOML editor, and the on-site device policy. They need no audio
 device, Outlook, Teams or ffmpeg.
 
@@ -56,6 +56,14 @@ upgrade skips the question and keeps the folder. `msiexec /i … /qn OUTDIR=E:\r
 cannot be created (a missing drive), the app records into the default and logs why. Before replacing the files it asks a running app to quit by dropping
 `quit.request` next to the exe (`App/QuitRequest.cs`) and waits up to 90 s; the app refuses during a recording and the
 install stops with a message. After the install it starts the app again (`msiexec /i … LAUNCHAPP=0` skips that).
+
+**Updates** (`App/Updater.cs`): at start (after a minute) and then once a day, unless `[capture] update_check = false`,
+the app asks `api.github.com/repos/drzdez/teamsrec-capture/releases/latest` (public, no token). A higher version
+with an `-x64.msi` asset shows **Install version X…** in the tray menu and a balloon (not for a declined version, and
+not during a recording – then right after it); **Check for updates** asks at once. Installing: a confirmation, the
+MSI downloaded to `%TEMP%` from this repository's releases only, its size and SHA-256 checked against the release's
+`digest`, then `msiexec /i … /passive` – the MSI quits the app and starts the new version. The last check and a
+declined version are kept in `HKCU\Software\teamsrec\capture` (`UpdateLastCheck`, `UpdateDeclined`).
 
 The version is `<Version>` in `TeamsRec.Capture.csproj` (the app reads it from its assembly). GitHub Actions
 (`.github/workflows/build.yml`) runs the tests and builds the MSI on every push to `main`; pushing a tag `v<version>`

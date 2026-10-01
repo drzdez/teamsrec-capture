@@ -21,8 +21,10 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private readonly NotifyIcon _icon;
     private readonly MonitorLoop _loop;
     private readonly SettingsServer _settings;
-    private readonly ConfigWatcher _watcher;
-    private string? _balloonStem;  // the recording the balloon on screen is about (UI thread only)  // edits from the review page's settings apply without a restart
+    private readonly ConfigWatcher _watcher;  // edits from the review page's settings apply without a restart
+    private readonly FileSystemWatcher? _quitRequest;  // the installer asks to quit before replacing the files
+    private bool _quitting;
+    private string? _balloonStem;  // the recording the balloon on screen is about (UI thread only)
     private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort;
 
     public TrayApp(AppConfig cfg, IClock clock)
@@ -36,6 +38,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         _loop.Changed += () => OnUi(RefreshIcon);
         _settings = new SettingsServer(cfg, () => _loop.Recording);
         _watcher = new ConfigWatcher(cfg);
+        _quitRequest = QuitRequest.Watch(AppContext.BaseDirectory, () => OnUi(OnQuitRequest));
 
         _status = new ToolStripMenuItem("Idle — waiting for a call") { Enabled = false };
         _manual = new ToolStripMenuItem("Record now (manual)", null, (_, _) => _loop.StartManual());
@@ -197,8 +200,25 @@ public sealed class TrayApp : ApplicationContext, INotifier
         }
     }
 
+    /// <summary>The installer wants to replace the files. Never in the middle of a recording: the install then
+    /// fails with a message and can be run again after the meeting.</summary>
+    private void OnQuitRequest()
+    {
+        if (_loop.Recording)
+        {
+            Log.Info("the installer asked to quit during a recording: refused");
+            Notify("Instalace nové verze počká: právě se nahrává. Spusťte ji znovu po schůzce.");
+            return;
+        }
+        Log.Info("the installer asked to quit");
+        Quit();
+    }
+
     private void Quit()
     {
+        if (_quitting)
+            return;
+        _quitting = true;
         _icon.Visible = false;
         // stopping may take a moment (streams, screen encoders): off the UI thread, then leave the message loop
         Task.Run(() =>
@@ -235,6 +255,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
             _icon.Visible = false;
             _icon.Dispose();
             _watcher.Dispose();
+            _quitRequest?.Dispose();
             _settings.Dispose();
             _loop.Dispose();
             _ui.Dispose();

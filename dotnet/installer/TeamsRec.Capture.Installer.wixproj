@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+
+  <!-- Per-user MSI of the recording app: build with build-msi.ps1 (publish first, then this project). -->
+  <PropertyGroup>
+    <OutputName>teamsrec-capture-$(ProductVersion)-x64</OutputName>
+    <Platform>x64</Platform>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(PublishDir)</DefineConstants>
+    <!-- per-user components keep their files under %LOCALAPPDATA%: the per-machine ICE rules do not apply -->
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
+    <!-- the quit command is a Property on purpose (see Package.wxs): its [references] are formatted at run time -->
+    <SuppressSpecificWarnings>1077</SuppressSpecificWarnings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="6.0.2" />
+  </ItemGroup>
+
+  <Target Name="CheckInputs" BeforeTargets="Build">
+    <Error Condition="'$(ProductVersion)' == '' or '$(PublishDir)' == ''"
+           Text="Pass -p:ProductVersion=x.y.z -p:PublishDir=... (build-msi.ps1 does)" />
+  </Target>
+
+</Project>

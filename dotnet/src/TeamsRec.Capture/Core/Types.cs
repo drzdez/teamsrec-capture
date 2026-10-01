@@ -65,7 +65,8 @@ public enum SourceKind { Live, Manual, Playback, Onsite }
 public static class Versions
 {
     public const string AppName = "teamsrec-capture";
-    public const string AppVersion = "1.0.5";
+    // one source of truth: <Version> in the .csproj (the installer and the release tag use the same)
+    public static readonly string AppVersion = typeof(Versions).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
     public const int FormatVersion = 1;
 }
 

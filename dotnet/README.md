@@ -33,9 +33,30 @@ dotnet build TeamsRec.Capture.slnx
 dotnet test  TeamsRec.Capture.slnx
 ```
 
-The tests (xUnit, 154 of them) cover the pure logic: detection rules, calendar matching, watchdog/backoff,
+The tests (xUnit, 165 of them) cover the pure logic: detection rules, calendar matching, watchdog/backoff,
 sidecar format, naming and rename, the TOML editor, and the on-site device policy. They need no audio
 device, Outlook, Teams or ffmpeg.
+
+## Installer (MSI) and releases
+
+```powershell
+powershell -File installer\build-msi.ps1   # -> installer\bin\x64\Release\teamsrec-capture-<version>-x64.msi
+```
+
+The script publishes a self-contained single-file exe (`artifacts\publish`, no .NET runtime needed on the target)
+and builds the WiX 6 project in `installer\`: a **per-user** MSI (no admin rights) into
+`%LOCALAPPDATA%\Programs\teamsrec-capture`, with a Start menu shortcut and a Startup shortcut (autostart). A newer
+MSI upgrades an older one in place. Before replacing the files it asks a running app to quit by dropping
+`quit.request` next to the exe (`App/QuitRequest.cs`) and waits up to 90 s; the app refuses during a recording and the
+install stops with a message. After the install it starts the app again (`msiexec /i … LAUNCHAPP=0` skips that).
+
+The version is `<Version>` in `TeamsRec.Capture.csproj` (the app reads it from its assembly). GitHub Actions
+(`.github/workflows/build.yml`) runs the tests and builds the MSI on every push to `main`; pushing a tag `v<version>`
+also publishes a GitHub Release with the MSI:
+
+```powershell
+git tag v1.0.6; git push origin v1.0.6
+```
 
 ## Run
 

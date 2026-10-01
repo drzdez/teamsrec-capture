@@ -70,7 +70,7 @@ public sealed class ConfigTests : IDisposable
     public void Missing_or_invalid_file_gives_defaults()
     {
         var missing = AppConfig.Load(Path.Combine(_dir, "nope.toml"));
-        Assert.Equal(@"D:\meetings", missing.OutDir);
+        Assert.Equal(AppConfig.ExpandUser("~/meetings"), missing.OutDir);  // in the profile: writable without admin rights
         Assert.Equal("ask", missing.DeviceMissing);
 
         var broken = Path.Combine(_dir, "broken.toml");

@@ -15,10 +15,25 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        var cfg = AppConfig.Load();
-        Directory.CreateDirectory(cfg.OutDir);
+        var cfg = InstallerFolder.LoadConfig(out var installerFolder);
+        string? unusable = null;
+        try
+        {
+            Directory.CreateDirectory(cfg.OutDir);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            // a drive this PC lacks, or a folder without write access: record into the default rather than not at all
+            unusable = $"{cfg.OutDir} ({e.Message})";
+            cfg.OutDir = AppConfig.ExpandUser(AppConfig.DefaultOutDir);
+            Directory.CreateDirectory(cfg.OutDir);
+        }
         using var fileLog = new FileLog(Path.Combine(cfg.OutDir, "teamsrec.log"));
         Log.Sink = fileLog.Write;
+        if (installerFolder is not null)
+            Log.Info($"recordings folder from the installer: {installerFolder}");
+        if (unusable is not null)
+            Log.Warn($"recordings folder {unusable} not usable, recording into {cfg.OutDir}");
 
         // the window capture of a running recording, started by the app itself (ScreenCaptureProcess)
         if (args.Length == 3 && args[0] == ScreenCaptureProcess.ChildArg)

@@ -46,7 +46,14 @@ powershell -File installer\build-msi.ps1   # -> installer\bin\x64\Release\teamsr
 The script publishes a self-contained single-file exe (`artifacts\publish`, no .NET runtime needed on the target)
 and builds the WiX 6 project in `installer\`: a **per-user** MSI (no admin rights) into
 `%LOCALAPPDATA%\Programs\teamsrec-capture`, with a Start menu shortcut and a Startup shortcut (autostart). A newer
-MSI upgrades an older one in place. Before replacing the files it asks a running app to quit by dropping
+MSI upgrades an older one in place.
+
+The installer has one question, the **recordings folder** (`FolderUI.wxs`), prefilled so a user just clicks Next: the
+folder the app last used, else `%USERPROFILE%\meetings` (in the profile, writable without admin rights; also the app's
+default without any config). The choice goes to `HKCU\Software\teamsrec\capture\OutDir`; the app writes it once into
+`[recordings] out_dir` of the shared TOML (`Config/InstallerFolder.cs`), after that the TOML wins (Nastavení). An
+upgrade skips the question and keeps the folder. `msiexec /i … /qn OUTDIR=E:\rec` sets it silently. If the folder
+cannot be created (a missing drive), the app records into the default and logs why. Before replacing the files it asks a running app to quit by dropping
 `quit.request` next to the exe (`App/QuitRequest.cs`) and waits up to 90 s; the app refuses during a recording and the
 install stops with a message. After the install it starts the app again (`msiexec /i … LAUNCHAPP=0` skips that).
 

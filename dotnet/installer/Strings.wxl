@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The folder page of WixUI_InstallDir asks for the recordings folder (FolderUI.wxs). -->
+<WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <String Id="InstallDirDlgTitle" Value="{\WixUI_Font_Title}Recordings folder" />
+  <String Id="InstallDirDlgDescription" Value="Where teamsrec saves recordings, transcripts and minutes." />
+  <String Id="InstallDirDlgFolderLabel" Value="Recordings go to this folder (shared with teamsrec-transcribe; can be changed later in Nastavení). Click Next to keep it:" />
+</WixLocalization>

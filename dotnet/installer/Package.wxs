@@ -31,6 +31,24 @@
       </Directory>
     </StandardDirectory>
 
+    <!-- The recordings folder, asked on the folder page (FolderUI.wxs). Default: the folder the app last used
+         (OutDirCurrent, written by the app), else %USERPROFILE%\meetings – in the profile, so always writable without
+         admin rights. Placed under the profile here only to have a Directory row; the value comes from SetProperty.
+         The app writes the choice into the shared TOML (Config/InstallerFolder.cs). The saved folder is used only on
+         a fresh install: a bad value there (another drive, error 1606) must never block an upgrade or uninstall. -->
+    <StandardDirectory Id="PersonalFolder">
+      <Directory Id="OUTDIR" Name="meetings" />
+    </StandardDirectory>
+    <Property Id="OUTDIR_CURRENT">
+      <RegistrySearch Id="OutDirCurrent" Root="HKCU" Key="Software\teamsrec\capture" Name="OutDirCurrent" Type="raw" />
+    </Property>
+    <SetProperty Id="OUTDIR" Action="SetOutDirCurrent" Value="[OUTDIR_CURRENT]" Before="CostInitialize" Sequence="first"
+                 Condition="NOT OUTDIR AND OUTDIR_CURRENT AND NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+    <SetProperty Id="OUTDIR" Action="SetOutDirDefault" Value="[%USERPROFILE]\meetings" Before="CostInitialize"
+                 Sequence="first" Condition="NOT OUTDIR AND NOT OUTDIR_CURRENT" />
+    <Property Id="WIXUI_INSTALLDIR" Value="OUTDIR" />
+    <UIRef Id="TeamsRecUI" />
+
     <ComponentGroup Id="App" Directory="INSTALLFOLDER">
       <Component Id="Exe">
         <File Id="AppExe" Source="$(PublishDir)\teamsrec-capture.exe" KeyPath="yes" />
@@ -62,8 +80,18 @@
       </Component>
     </StandardDirectory>
 
+    <!-- Only on a fresh install: an upgrade skips the folder page and must not hand the app a default that would
+         replace the folder set in Nastavení. Uninstall leaves the folder unless it is empty. -->
+    <Component Id="RecordingsFolder" Directory="OUTDIR" Guid="3c9a7e52-1d4f-4b8e-a6f0-5e2b9d7c4a18"
+               Condition="NOT WIX_UPGRADE_DETECTED">
+      <CreateFolder />
+      <RegistryValue Root="HKCU" Key="Software\teamsrec\capture" Name="OutDir" Type="string" Value="[OUTDIR]"
+                     KeyPath="yes" />
+    </Component>
+
     <Feature Id="Main">
       <ComponentGroupRef Id="App" />
+      <ComponentRef Id="RecordingsFolder" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="AutostartShortcut" />
     </Feature>

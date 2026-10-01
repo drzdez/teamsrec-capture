@@ -11,8 +11,11 @@ namespace TeamsRec.Capture.Config;
 /// </summary>
 public sealed class AppConfig
 {
-    /// <summary>Where recordings go ([recordings] out_dir), with ~ expanded.</summary>
-    public string OutDir { get; set; } = ExpandUser(@"D:\meetings");
+    /// <summary>Where recordings go ([recordings] out_dir), with ~ expanded. The default is in the user's profile,
+    /// always writable without admin rights, and the same as teamsrec-transcribe's.</summary>
+    public string OutDir { get; set; } = ExpandUser(DefaultOutDir);
+
+    public const string DefaultOutDir = "~/meetings";
 
     /// <summary>[calendar] outlook: classic Outlook (COM) gives the meeting title and participants.</summary>
     public bool UseOutlook { get; set; }
@@ -77,7 +80,7 @@ public sealed class AppConfig
         return new AppConfig
         {
             SourcePath = path,
-            OutDir = ExpandUser(Str(Get(recordings, "out_dir"), @"D:\meetings")),
+            OutDir = ExpandUser(Str(Get(recordings, "out_dir"), DefaultOutDir)),
             UseOutlook = Truthy(Get(calendar, "outlook"), false),
             PromptDefault = Str(Get(capture, "prompt_default"), "record"),
             UserName = Str(Get(user, "name"), "").Trim(),

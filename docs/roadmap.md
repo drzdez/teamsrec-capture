@@ -63,6 +63,10 @@ v `recording-format.md`, tady je jen pořadí a stav práce. Stav: ☐ nezačato
 - ☑ **Kalendář Outlook** jako zdroj názvu a účastníků schůzky: 2026-09-14, klasický Outlook přes COM, volitelné
   (`[calendar] outlook`, dotaz při `config --init`). Graph API zatím ne (registrace aplikace v tenantu).
 
+- ☐ **Linux, Mac, tablety**: rozbor a návrh v [cross-platform-design.md](cross-platform-design.md) – jádro jako
+  .NET knihovna vytažená z dnešní aplikace, porty pro zvuk / detekci / okna / kalendář, Python beze změny role;
+  nejdřív Linux, pak Mac, tablet nejdřív jako kontrola přepisů. Zaznamenáno 2026-10-01.
+
 ## Zásady, které platí pro všechno
 
 - Zdroj dat je jen adresář nahrávek a soubory v něm; žádná databáze, žádný skrytý index. Odvozené soubory

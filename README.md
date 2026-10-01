@@ -16,6 +16,8 @@ What exists:
   **[.NET návrh / design](docs/dotnet-design.md)**; build, run and status: [dotnet/README.md](dotnet/README.md);
   what matches the prototype and what is still missing: [dotnet/PARITY.md](dotnet/PARITY.md).
 - `docs/recording-format.md` + `docs/recording.schema.json` — the contract both projects build on.
+- `docs/cross-platform-design.md` — **Linux, Mac a tablety (Android, iOS)**: what is tied to Windows, the proposed
+  layers, the language of a core that runs everywhere, the steps. Not implemented yet.
 - `docs/roadmap.md` — shared plan of both repos: what is done, what comes next, what is still to be decided.
 - `legacy/teamsrec.py` — the working Python prototype this app is a port of. It is usable today,
   see [Using the prototype today](#using-the-prototype-today).

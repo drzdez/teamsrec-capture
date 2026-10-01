@@ -1,241 +1,250 @@
-# teamsrec na Linuxu, Macu a tabletech – rozbor a návrh
+# teamsrec on Linux, Mac and tablets – analysis and design
 
-Stav k 1. 10. 2026. Dokument je podklad pro rozhodnutí, nic z toho zatím není implementované. Navazuje na
-[dotnet-design.md](dotnet-design.md) (současná Windows aplikace pro nahrávání) a [recording-format.md](recording-format.md)
-(kontrakt mezi nahráváním a přepisem).
+State as of 1 Oct 2026. This document is a basis for a decision; none of it is implemented yet. It builds on
+[dotnet-design.md](dotnet-design.md) (today's Windows recording app) and [recording-format.md](recording-format.md)
+(the contract between recording and transcription).
 
-## 1. Cíl
+## 1. Goal
 
-- teamsrec má fungovat i na **Linuxu** a **Macu**, později i na **tabletech** (Android, iOS/iPadOS).
-- Co nejvíc z toho, co už běží na Windows, se má **přepoužít**, ne psát znovu.
-- „Jádro“ (logika nahrávání a vše kolem nahrávky) má běžet na čemkoli; platformově specifické mají být jen tenké
-  vrstvy kolem: zachycení zvuku, poznání hovoru, snímání oken, kalendář, ikona v liště.
-- Přepis zůstává v Pythonu (WhisperX, pyannote, OCR, Ollama/Claude) – tam je ekosystém a jinde se to dohnat nedá.
+- teamsrec should work on **Linux** and **Mac** too, later also on **tablets** (Android, iOS/iPadOS).
+- As much as possible of what already runs on Windows should be **reused**, not rewritten.
+- The "core" (the recording logic and everything around a recording) should run anywhere; only thin layers around it
+  should be platform-specific: audio capture, call detection, window capture, calendar, tray icon.
+- Transcription stays in Python (WhisperX, pyannote, OCR, Ollama/Claude) – that is where the ecosystem is, and it
+  cannot be matched elsewhere.
 
-## 2. Z čeho se dnes teamsrec skládá
+## 2. What teamsrec consists of today
 
 ```
  teamsrec-capture (C#, .NET 10, Windows)          teamsrec-transcribe (Python 3.12)
  ─────────────────────────────────────           ──────────────────────────────────────────
- tray, detekce hovoru, nahrávání zvuku,           přepis (WhisperX + pyannote, OCR jmen z videa),
- snímání oken Teams, Outlook, finalizace   ──►    zápisy (Ollama / Claude), server stránky (REST + SSE)
-            │   nahrávka podle kontraktu                       ▲
+ tray, call detection, audio recording,           transcription (WhisperX + pyannote, OCR of names from video),
+ Teams window capture, Outlook, finalizing  ──►   minutes (Ollama / Claude), page server (REST + SSE)
+            │   recording by the contract                      ▲
             │   (sidecar JSON + WAV + MP4)                     │ HTTP 127.0.0.1
-            ▼                                       web stránka (index.html, čistý JS) – v prohlížeči
-      <out_dir>/YYYY/MM/<stem>/                     nebo v okně aplikace (Tauri, Rust, ~300 řádků)
+            ▼                                       web page (index.html, plain JS) – in a browser
+      <out_dir>/YYYY/MM/<stem>/                     or in the app window (Tauri, Rust, ~300 lines)
 ```
 
-Tři rozhraní už dnes nezávisí na platformě a jsou tím nejcennějším, co se přenese:
+Three interfaces are already platform-independent and are the most valuable things to carry over:
 
-1. **Kontrakt nahrávky** (`recording-format.md`): složka se sidecarem a stopami. Kdo ho zapíše, s tím přepis umí pracovat.
-2. **REST + SSE API serveru stránky** (popsané v OpenAPI 3.1, `/api/openapi.json`).
-3. **Webová stránka**: jedna stránka pro kontrolu přepisů, zápisy i nastavení obou aplikací; běží v jakémkoli prohlížeči
-   nebo WebView.
+1. **The recording contract** (`recording-format.md`): a folder with a sidecar and tracks. Whoever writes it, the
+   transcription can work with it.
+2. **The page server's REST + SSE API** (described in OpenAPI 3.1, `/api/openapi.json`).
+3. **The web page**: one page for reviewing transcripts, minutes and the settings of both apps; it runs in any
+   browser or WebView.
 
-## 3. Co je vázané na Windows (změřeno v kódu)
+## 3. What is tied to Windows (measured in the code)
 
-### Nahrávací aplikace (5 400 řádků C#)
+### The recording app (5,400 lines of C#)
 
-| oblast | řádků | Windows? | čím |
+| area | lines | Windows? | through |
 |---|---|---|---|
-| Core (typy, rozhraní) | 106 | ne | – |
-| Config (TOML, nastavení, sledování souboru) | 532 | ne | – |
-| Contract (pojmenování, sidecar) | 437 | ne | – |
-| Recording (finalizace, mix přes ffmpeg, obnova po pádu, watchdog) | 770 | ne | – |
-| Settings (záložní stránka nastavení) | 279 | ne | HttpListener je .NET |
-| App – logika (`AppLogic`, `MonitorLoop`) | ~850 | částečně | volá Windows části níže |
-| **Audio** (WASAPI loopback + mikrofon, test mikrofonu) | 924 | **ano** | NAudio, Core Audio |
-| **Detection** (kdo používá mikrofon, okna Teams) | 420 | **ano** | registr ConsentStore, Core Audio sessions, EnumWindows |
-| **Screen** (video oken) | 455 | **ano** | PrintWindow (GDI) + ffmpeg |
-| **Calendar** | 306 | **ano** | Outlook COM (logika párování schůzek je neutrální) |
-| **Tray, dialogy** | ~350 | **ano** | WinForms |
+| Core (types, interfaces) | 106 | no | – |
+| Config (TOML, settings, file watching) | 532 | no | – |
+| Contract (naming, sidecar) | 437 | no | – |
+| Recording (finalizing, mix through ffmpeg, crash recovery, watchdog) | 770 | no | – |
+| Settings (fallback settings page) | 279 | no | HttpListener is .NET |
+| App – logic (`AppLogic`, `MonitorLoop`) | ~850 | partly | calls the Windows parts below |
+| **Audio** (WASAPI loopback + microphone, microphone test) | 924 | **yes** | NAudio, Core Audio |
+| **Detection** (who uses the microphone, Teams windows) | 420 | **yes** | ConsentStore registry, Core Audio sessions, EnumWindows |
+| **Screen** (window video) | 455 | **yes** | PrintWindow (GDI) + ffmpeg |
+| **Calendar** | 306 | **yes** | Outlook COM (the meeting-matching logic is neutral) |
+| **Tray, dialogs** | ~350 | **yes** | WinForms |
 
-**Zhruba polovina (2 500 řádků) je platformově neutrální** a pokrytá velkou částí ze 163 testů.
+**Roughly half (2,500 lines) is platform-neutral** and covered by a large part of the 163 tests.
 
-### Přepis a server (6 000 řádků Pythonu, 2 200 řádků stránky)
+### Transcription and server (6,000 lines of Python, 2,200 lines of page)
 
-Python sám běží na Linuxu i Macu. Na Windows jsou vázané jen drobnosti:
+Python itself runs on Linux and Mac. Only small things are tied to Windows:
 
-| místo | co | náhrada |
+| place | what | replacement |
 |---|---|---|
-| `settings.input_devices` | seznam mikrofonů z registru | Linux: `pactl list sources`; Mac: Core Audio přes malý helper nebo `system_profiler` |
-| `/api/system/sound-settings` | `control mmsys.cpl` | Linux: `pavucontrol` / nastavení prostředí; Mac: `open x-apple.systempreferences:…sound` |
-| `_kill_tree` | `taskkill /T` | jinde skupina procesů (`os.killpg`) |
-| `outlook.py` | Outlook COM | viz kalendář v kapitole 7 |
-| `keyring` | Správce přihlašovacích údajů | samo: Secret Service (Linux), Keychain (Mac) |
-| WhisperX na CUDA | Linux s NVIDIA stejně jako Windows | Mac: jiný poskytovatel přepisu (kapitola 6) |
+| `settings.input_devices` | list of microphones from the registry | Linux: `pactl list sources`; Mac: Core Audio through a small helper or `system_profiler` |
+| `/api/system/sound-settings` | `control mmsys.cpl` | Linux: `pavucontrol` / the desktop's settings; Mac: `open x-apple.systempreferences:…sound` |
+| `_kill_tree` | `taskkill /T` | elsewhere a process group (`os.killpg`) |
+| `outlook.py` | Outlook COM | see the calendar in chapter 7 |
+| `keyring` | Windows Credential Manager | by itself: Secret Service (Linux), Keychain (Mac) |
+| WhisperX on CUDA | Linux with NVIDIA the same as Windows | Mac: a different transcription provider (chapter 7) |
 
-Okno aplikace (Tauri) se přeloží pro Linux (WebKitGTK) i Mac (WKWebView) beze změny kódu.
+The app window (Tauri) builds for Linux (WebKitGTK) and Mac (WKWebView) without code changes.
 
-## 4. Návrh: vrstvy
+## 4. Design: layers
 
 ```
  ┌───────────────────────────────────────────────────────────────────────────────────────┐
- │  UI: webová stránka (sdílená všude)  +  tenká skořápka: tray / menu bar / tabletová app │
+ │  UI: the web page (shared everywhere)  +  a thin shell: tray / menu bar / tablet app   │
  ├───────────────────────────────────────────────────────────────────────────────────────┤
- │  JÁDRO (platformově neutrální)                                                          │
- │   • stavový automat nahrávání (kdy začít / skončit, onsite, přehrávání, jiné aplikace)  │
- │   • kontrakt: pojmenování, sidecar, finalizace, mix, obnova po pádu                    │
- │   • konfigurace (TOML), stav pro stránku (teamsrec-capture.json), watchdog zvuku         │
- │   • párování schůzek z kalendáře (bez zdroje)                                          │
+ │  CORE (platform-neutral)                                                              │
+ │   • recording state machine (when to start / stop, on-site, playback, other apps)      │
+ │   • contract: naming, sidecar, finalizing, mix, crash recovery                         │
+ │   • configuration (TOML), status for the page (teamsrec-capture.json), audio watchdog  │
+ │   • matching meetings from the calendar (without the source)                           │
  ├───────────────────────────────────────────────────────────────────────────────────────┤
- │  PORTY (rozhraní, která jádro volá)                                                     │
- │   IAudioCapture  ICallDetector  IWindowCapture  ICalendarSource  INotifier  ITray       │
+ │  PORTS (interfaces the core calls)                                                    │
+ │   IAudioCapture  ICallDetector  IWindowCapture  ICalendarSource  INotifier  ITray     │
  ├──────────────┬──────────────────┬──────────────────┬────────────────┬──────────────────┤
  │  Windows      │  Linux           │  macOS           │  Android        │  iOS / iPadOS     │
  │  WASAPI       │  PipeWire/Pulse  │  ScreenCaptureKit│  AudioRecord    │  AVAudioEngine    │
- │  ConsentStore │  source-outputs  │  Core Audio      │  (jen mikrofon) │  (jen mikrofon)   │
- │  EnumWindows  │  X11 / portál    │  SCK okna        │  –              │  –                │
+ │  ConsentStore │  source-outputs  │  Core Audio      │  (mic only)     │  (mic only)       │
+ │  EnumWindows  │  X11 / portal    │  SCK windows     │  –              │  –                │
  │  Outlook COM  │  ICS / Graph     │  ICS / Graph     │  Graph / ICS    │  EventKit / Graph │
  └──────────────┴──────────────────┴──────────────────┴────────────────┴──────────────────┘
-                 ▼ nahrávka podle kontraktu (+ nahrání na server, kde přepis neběží lokálně)
+                 ▼ recording by the contract (+ upload to a server where transcription does not run locally)
  ┌───────────────────────────────────────────────────────────────────────────────────────┐
- │  teamsrec-transcribe (Python) – stejný na Windows, Linuxu, Macu; tablet ho volá po síti  │
+ │  teamsrec-transcribe (Python) – the same on Windows, Linux, Mac; a tablet calls it     │
+ │  over the network                                                                     │
  └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Dnešní .NET kód tomuto rozdělení už z velké části odpovídá (`Core/Types.cs` má `IAudioSource`, `INotifier`, `IClock`).
-Chybí oddělit porty pro detekci hovoru, okna a kalendář a vytáhnout jádro do samostatné knihovny.
+Today's .NET code already largely matches this split (`Core/Types.cs` has `IAudioSource`, `INotifier`, `IClock`).
+What is missing is separating the ports for call detection, windows and calendar and extracting the core into a
+separate library.
 
-## 5. Jazyk jádra: .NET, Kotlin, nebo Rust?
+## 5. Core language: .NET, Kotlin or Rust?
 
-Jádro musí běžet na Windows, Linuxu, Macu, Androidu i iOS. Ve hře jsou tři cesty:
+The core must run on Windows, Linux, Mac, Android and iOS. There are three options:
 
-| kritérium | **.NET (C#)** – vytáhnout jádro z dnešní aplikace | **Kotlin Multiplatform** | **Rust** (v Tauri) |
+| criterion | **.NET (C#)** – extract the core from today's app | **Kotlin Multiplatform** | **Rust** (in Tauri) |
 |---|---|---|---|
-| běží na Win / Linux / Mac | ano (.NET 10) | ano (JVM, nebo Kotlin/Native) | ano |
-| běží na Android / iOS | ano (.NET for Android / iOS, MAUI) | ano, nejvyzrálejší sdílení logiky pro mobil | ano (Tauri 2 mobile) |
-| přepoužití z Windows | **~2 500 řádků + testy beze změny** | přepis jádra (testy jako předloha) | přepis jádra |
-| UI tray na desktopu | Avalonia (Win/Linux/Mac) | Compose Desktop | Tauri (už máme) |
-| UI na tabletu | MAUI + WebView se stránkou | Compose Multiplatform nebo WebView | Tauri mobile = **stejná webová stránka** |
-| nativní audio | P/Invoke / bindingy; pro Mac existují bindingy ScreenCaptureKit | expect/actual + JNA / ObjC interop | crates (wasapi, pipewire, screencapturekit) |
-| jazyků v projektu | 3 (C#, Python, Rust skořápka) | **4** (+ Kotlin) | 2–3 (Rust, Python, C# do přechodu) |
-| velikost / start desktop | malá (trimovaný .NET) | JVM ~100 MB, pomalejší start (Native složitější) | nejmenší |
+| runs on Win / Linux / Mac | yes (.NET 10) | yes (JVM, or Kotlin/Native) | yes |
+| runs on Android / iOS | yes (.NET for Android / iOS, MAUI) | yes, the most mature logic sharing for mobile | yes (Tauri 2 mobile) |
+| reuse from Windows | **~2,500 lines + tests unchanged** | rewrite of the core (tests as a template) | rewrite of the core |
+| desktop tray UI | Avalonia (Win/Linux/Mac) | Compose Desktop | Tauri (already have it) |
+| tablet UI | MAUI + WebView with the page | Compose Multiplatform or WebView | Tauri mobile = **the same web page** |
+| native audio | P/Invoke / bindings; ScreenCaptureKit bindings exist for Mac | expect/actual + JNA / ObjC interop | crates (wasapi, pipewire, screencapturekit) |
+| languages in the project | 3 (C#, Python, Rust shell) | **4** (+ Kotlin) | 2–3 (Rust, Python, C# until the switch) |
+| desktop size / start | small (trimmed .NET) | JVM ~100 MB, slower start (Native more complex) | smallest |
 
-### Doporučení: .NET
+### Recommendation: .NET
 
-- **Přepoužití je největší:** jádro z dnešní aplikace se vytáhne do knihovny `TeamsRec.Capture.Core` (`net10.0`, bez
-  `-windows`) i s testy. Windows aplikace ji jen začne používat a nic se pro ni nezmění.
-- **.NET pokryje všech pět platforem** jedním runtimem, včetně Androidu a iOS.
-- **Kotlin by znamenal čtvrtý jazyk a třetí přepis** nahrávání za měsíc (Python → C# → Kotlin). Dává smysl, jen
-  kdyby se těžiště přesunulo na nativní mobilní aplikace (bohaté offline UI, nahrávání na pozadí jako hlavní
-  scénář). Jak ukazuje kapitola 8, na tabletech je nahrávání omezené, takže to nepředpokládám.
-- **Rust** je lákavý tím, že Tauri už máme a na tabletu by běžela stejná webová stránka. Jádro by se ale psalo znovu.
-  Dává smysl jen jako budoucí sjednocení desktopové skořápky. **UI na tabletech přes WebView se stránkou platí
-  pro .NET stejně.**
+- **The largest reuse:** the core of today's app is extracted into a `TeamsRec.Capture.Core` library (`net10.0`,
+  without `-windows`) together with its tests. The Windows app just starts using it and nothing changes for it.
+- **.NET covers all five platforms** with one runtime, including Android and iOS.
+- **Kotlin would mean a fourth language and a third rewrite** of the recording within a month (Python → C# → Kotlin).
+  It makes sense only if the centre of gravity moved to native mobile apps (a rich offline UI, background recording as
+  the main scenario). As chapter 8 shows, recording on tablets is limited, so I do not expect that.
+- **Rust** is tempting because we already have Tauri and the same web page would run on a tablet. But the core would
+  be written again. It makes sense only as a future unification of the desktop shell. **The tablet UI through a
+  WebView with the page works for .NET just the same.**
 
 ## 6. Linux
 
-| port | řešení | poznámka |
+| port | solution | note |
 |---|---|---|
-| zvuk hovoru (loopback) | PipeWire / PulseAudio **monitor** výstupního zařízení: `pw-record --target <sink>.monitor` nebo libpulse přes P/Invoke | spolehlivé; PipeWire je dnes standard (Fedora, Ubuntu 22.10+) |
-| mikrofon | stejně, zdroj podle jména (`pactl list sources`) | výběr podle názvu jako na Windows |
-| **kdo používá mikrofon** | `pactl list source-outputs` / `pw-dump`: u každého záznamu je `application.name` a `application.process.binary` | **lepší než Windows**: přímo „chrome“, „teams-for-linux“, „zoom“ |
-| Teams na Linuxu | oficiální desktopový klient už neexistuje (konec 2022): Teams **v prohlížeči / PWA**, případně neoficiální `teams-for-linux` | detekce = prohlížeč s otevřenou schůzkou, stejně jako dnešní „jiné aplikace“ |
-| názvy oken / video jmenovek | **X11**: seznam oken a snímky (`_NET_CLIENT_LIST`, XGetImage); **Wayland**: jen přes portál ScreenCast s jednorázovým souhlasem (novější portály si souhlas pamatují) | na Waylandu bude snímání oken volitelné; diarizace + otisky hlasu fungují i bez něj |
-| kalendář | žádný Outlook COM: **ICS adresa** publikovaného kalendáře (Outlook na webu ji umí), nebo Microsoft Graph | ICS je nejjednodušší a funguje všude; Graph vyžaduje registraci aplikace v Entra |
-| tray, oznámení | Avalonia `TrayIcon` (StatusNotifierItem); GNOME potřebuje rozšíření AppIndicator | oznámení přes `org.freedesktop.Notifications` |
-| přepis | **beze změny** (NVIDIA + CUDA na Linuxu běží nejlépe) | odpadá řada Windows obtíží (ffmpeg v PATH, …) |
-| klíče | `keyring` → Secret Service (GNOME Keyring / KWallet) | bez úprav |
-| okno přepisů | Tauri pro Linux (WebKitGTK) | build `npm run build` na Linuxu |
-| distribuce | AppImage nebo .deb; Flatpak až později (sandbox komplikuje přístup k PipeWire a oknům) | |
+| call audio (loopback) | the PipeWire / PulseAudio **monitor** of the output device: `pw-record --target <sink>.monitor` or libpulse through P/Invoke | reliable; PipeWire is the standard today (Fedora, Ubuntu 22.10+) |
+| microphone | the same, the source by name (`pactl list sources`) | choice by name as on Windows |
+| **who uses the microphone** | `pactl list source-outputs` / `pw-dump`: each entry has `application.name` and `application.process.binary` | **better than Windows**: directly "chrome", "teams-for-linux", "zoom" |
+| Teams on Linux | the official desktop client no longer exists (end of 2022): Teams **in the browser / PWA**, or the unofficial `teams-for-linux` | detection = a browser with a meeting open, the same as today's "other apps" |
+| window titles / name-label video | **X11**: list of windows and snapshots (`_NET_CLIENT_LIST`, XGetImage); **Wayland**: only through the ScreenCast portal with a one-time consent (newer portals remember the consent) | on Wayland window capture will be optional; diarization + voice prints work without it |
+| calendar | no Outlook COM: the **ICS address** of a published calendar (Outlook on the web supports it), or Microsoft Graph | ICS is the simplest and works everywhere; Graph needs an app registration in Entra |
+| tray, notifications | Avalonia `TrayIcon` (StatusNotifierItem); GNOME needs the AppIndicator extension | notifications through `org.freedesktop.Notifications` |
+| transcription | **unchanged** (NVIDIA + CUDA runs best on Linux) | a number of Windows troubles go away (ffmpeg in PATH, …) |
+| keys | `keyring` → Secret Service (GNOME Keyring / KWallet) | no changes |
+| transcript window | Tauri for Linux (WebKitGTK) | `npm run build` on Linux |
+| distribution | AppImage or .deb; Flatpak later (the sandbox complicates access to PipeWire and windows) | |
 
-**Náročnost:** střední. Nejvíc práce je v audiu a detekci (nové porty). Snímání oken na Waylandu je jediné místo, kde
-Linux umí méně než Windows.
+**Effort:** medium. Most of the work is in audio and detection (new ports). Window capture on Wayland is the only
+place where Linux can do less than Windows.
 
 ## 7. macOS
 
-| port | řešení | poznámka |
+| port | solution | note |
 |---|---|---|
-| zvuk hovoru | **ScreenCaptureKit** (macOS 13+) umí zachytit systémový zvuk (`capturesAudio`) | vyžaduje oprávnění „Nahrávání obrazovky“; dřív jen virtuální zařízení (BlackHole) |
-| mikrofon | AVAudioEngine / Core Audio | oprávnění Mikrofon |
-| kdo používá mikrofon | Core Audio `kAudioDevicePropertyDeviceIsRunningSomewhere` (že ho někdo používá) + běžící procesy (Teams, prohlížeč) | přímé „která aplikace“ macOS nedává; kombinace stačí |
-| okna Teams | ScreenCaptureKit – snímky jednotlivých oken | stejné oprávnění jako zvuk |
-| kalendář | ICS / Microsoft Graph; Outlook pro Mac nemá COM | EventKit, když je kalendář synchronizovaný do systému |
+| call audio | **ScreenCaptureKit** (macOS 13+) can capture system audio (`capturesAudio`) | needs the "Screen Recording" permission; before, only a virtual device (BlackHole) |
+| microphone | AVAudioEngine / Core Audio | Microphone permission |
+| who uses the microphone | Core Audio `kAudioDevicePropertyDeviceIsRunningSomewhere` (that someone uses it) + running processes (Teams, browser) | macOS does not tell "which app" directly; the combination is enough |
+| Teams windows | ScreenCaptureKit – snapshots of individual windows | the same permission as audio |
+| calendar | ICS / Microsoft Graph; Outlook for Mac has no COM | EventKit when the calendar is synced into the system |
 | menu bar | Avalonia `TrayIcon` → `NSStatusItem` | |
-| bindingy | .NET for macOS má bindingy ScreenCaptureKit; jinak malý pomocník ve Swiftu volaný jako proces | pomocník ve Swiftu je jednodušší na údržbu |
-| **přepis** | **CUDA není**: WhisperX (faster-whisper / CTranslate2) poběží jen na CPU, pomalu | nový poskytovatel **mlx-whisper** (Apple Silicon) nebo **whisper.cpp** (Metal); pyannote na MPS / CPU; zápisy přes Ollama běží na Metalu dobře |
-| podpis | aplikace musí být podepsaná a notarizovaná (Apple Developer účet), jinak ji Gatekeeper blokuje | Tauri i .NET to umí |
+| bindings | .NET for macOS has ScreenCaptureKit bindings; otherwise a small Swift helper called as a process | a Swift helper is easier to maintain |
+| **transcription** | **no CUDA**: WhisperX (faster-whisper / CTranslate2) runs only on the CPU, slowly | a new provider **mlx-whisper** (Apple Silicon) or **whisper.cpp** (Metal); pyannote on MPS / CPU; minutes through Ollama run well on Metal |
+| signing | the app must be signed and notarized (Apple Developer account), otherwise Gatekeeper blocks it | both Tauri and .NET support it |
 
-**Náročnost:** střední až vyšší. Nahrávání je díky ScreenCaptureKit čisté. Hlavní práce je nový poskytovatel přepisu
-pro Apple Silicon a oprávnění, podpis a notarizace.
+**Effort:** medium to higher. Recording is clean thanks to ScreenCaptureKit. The main work is a new transcription
+provider for Apple Silicon, plus permissions, signing and notarization.
 
-## 8. Tablety: Android a iOS / iPadOS
+## 8. Tablets: Android and iOS / iPadOS
 
-### Co jde a co ne
+### What works and what does not
 
-- **Zvuk hovoru Teams nahrát nejde.**
-  - Android (10+) dovoluje zachytit zvuk jiných aplikací jen přes AudioPlaybackCapture, a ten **hovorový zvuk
-    (VOICE_COMMUNICATION) z principu vynechává**.
-  - iOS ostatní aplikace neposlouchá vůbec. ReplayKit broadcast zvuk aplikací zachytí, ale u VoIP hovoru je to
-    neověřené a spíš ne.
-  - Nahrávání hovorů tedy zůstává na počítači.
-- **Schůzka na místě jde dobře:** tablet uprostřed stolu s mikrofonem je přesně scénář „onsite“, jen bez notebooku.
-- **Přepis na tabletu lokálně spíš ne.** WhisperX + pyannote potřebují GPU a Python. Reálné možnosti:
-  - poslat nahrávku domů na PC (server přepisu) – **doporučeno**;
-  - cloudový přepis (OpenAI / ElevenLabs, už umíme);
-  - malý model na zařízení (whisper.cpp) – jen pro rychlý náhled, bez diarizace.
-- **Kontrola přepisů a zápisů na tabletu dává velký smysl:** stejná webová stránka, jen ve WebView na dotyk.
+- **Recording Teams call audio is not possible.**
+  - Android (10+) allows capturing other apps' audio only through AudioPlaybackCapture, which **by design leaves out
+    call audio (VOICE_COMMUNICATION)**.
+  - iOS does not let you listen to other apps at all. A ReplayKit broadcast captures app audio, but for a VoIP call
+    this is unverified and more likely not.
+  - Recording calls therefore stays on the computer.
+- **An on-site meeting works well:** a tablet in the middle of the table with a microphone is exactly the "onsite"
+  scenario, just without a laptop.
+- **Transcription on the tablet locally – rather not.** WhisperX + pyannote need a GPU and Python. Realistic options:
+  - send the recording home to the PC (transcription server) – **recommended**;
+  - cloud transcription (OpenAI / ElevenLabs, already supported);
+  - a small model on the device (whisper.cpp) – only for a quick preview, without diarization.
+- **Reviewing transcripts and minutes on a tablet makes a lot of sense:** the same web page, just in a WebView for
+  touch.
 
-### Návrh tabletové aplikace
+### Tablet app design
 
 ```
- tablet (.NET MAUI, nebo Tauri mobile)                     PC (Windows / Linux / Mac)
- ┌────────────────────────────────────┐                    ┌──────────────────────────────┐
- │ nahrávat schůzku na místě (mikrofon)│  nahrání (HTTPS) ─►│ server přepisu (dnešní Python)│
- │ jádro: pojmenování, sidecar,        │                    │ + import / upload endpoint    │
- │   kalendář (EventKit / Graph)       │ ◄── stránka ───────│ + přihlášení (token / párování)│
- │ WebView: kontrola přepisů, zápisy   │      (REST + SSE)  │ + dostupný v LAN nebo přes VPN │
- └────────────────────────────────────┘                    └──────────────────────────────┘
+ tablet (.NET MAUI, or Tauri mobile)                          PC (Windows / Linux / Mac)
+ ┌─────────────────────────────────────┐                    ┌───────────────────────────────┐
+ │ record an on-site meeting (mic)      │  upload (HTTPS) ─► │ transcription server (today's  │
+ │ core: naming, sidecar,               │                    │   Python)                      │
+ │   calendar (EventKit / Graph)        │ ◄── page ───────── │ + import / upload endpoint     │
+ │ WebView: transcript review, minutes  │     (REST + SSE)   │ + sign-in (token / pairing)    │
+ │                                      │                    │ + reachable in LAN or over VPN │
+ └─────────────────────────────────────┘                    └───────────────────────────────┘
 ```
 
-Server dnes poslouchá jen na 127.0.0.1 a nemá přihlášení. Pro tablet potřebuje:
-- **volitelný provoz v síti:** LAN, ideálně přes VPN nebo Tailscale, ne do internetu;
-- **párování zařízení tokenem** (QR kód na stránce Nastavení);
+The server today listens only on 127.0.0.1 and has no sign-in. For a tablet it needs:
+- **optional network operation:** LAN, ideally over a VPN or Tailscale, not to the internet;
+- **device pairing with a token** (a QR code on the Settings page);
 - **TLS;**
-- **endpoint pro nahrání nahrávky:** složka podle kontraktu, jako dnešní `_inbox`.
+- **an endpoint for uploading a recording:** a folder by the contract, like today's `_inbox`.
 
-Bezpečnost tu je hlavní téma: jde o nahrávky schůzek a biometrické otisky.
+Security is the main topic here: these are meeting recordings and biometric voice prints.
 
-**Náročnost:** vyšší a dává smysl až po Linuxu. Nejdřív serverová část (přihlášení, nahrávání), pak samotná aplikace.
+**Effort:** higher, and it makes sense only after Linux. First the server part (sign-in, upload), then the app itself.
 
-## 9. Python zůstává – co se v něm změní
+## 9. Python stays – what changes in it
 
-- **Platformově neutrální náhrady** drobností z kapitoly 3: seznam mikrofonů, dialog zvuku, ukončení procesu.
-- **Poskytovatelé přepisu podle stroje:** `whisperx` (CUDA), `mlx` / `whisper-cpp` (Mac), cloud. Volba je už dnes
-  v Nastavení, přibudou hodnoty.
-- **Kalendář:** zdroj `ics` (adresa), případně `graph`, vedle `outlook` (COM).
-- **Server:** volitelné přihlášení a provoz mimo 127.0.0.1, endpoint pro nahrání.
-- **CI na Linuxu:** testy (93) a testy stránky pustit i na Linuxu. Dnes běží jen na Windows.
+- **Platform-neutral replacements** for the small things from chapter 3: the list of microphones, the sound dialog,
+  ending a process.
+- **Transcription providers by machine:** `whisperx` (CUDA), `mlx` / `whisper-cpp` (Mac), cloud. The choice is already
+  in Settings today; values will be added.
+- **Calendar:** an `ics` source (an address), possibly `graph`, next to `outlook` (COM).
+- **Server:** optional sign-in and operation outside 127.0.0.1, an upload endpoint.
+- **CI on Linux:** run the tests (93) and the page tests on Linux too. Today they run only on Windows.
 
-## 10. Postup
+## 10. Plan
 
-| fáze | co | výsledek |
+| phase | what | result |
 |---|---|---|
-| 0 | vytáhnout `TeamsRec.Capture.Core` (net10.0) a porty z dnešního .NET kódu, testy s ním | Windows beze změny chování, jádro připravené pro jiné platformy |
-| 1 | Python bez Windows drobností, ICS kalendář, CI na Linuxu | přepis a stránka plně na Linuxu |
-| 2 | **Linux:** porty PipeWire (zvuk, mikrofon, detekce), Avalonia tray, X11 okna, Tauri build, AppImage | první ne-Windows nahrávání |
-| 3 | **Mac:** ScreenCaptureKit (zvuk + okna), menu bar, poskytovatel mlx / whisper.cpp, podpis | nahrávání a přepis na Apple Silicon |
-| 4 | **server pro vzdálené klienty:** přihlášení, TLS, nahrávání, LAN / VPN | základ pro tablety |
-| 5 | **tablet:** nahrávání na místě, kontrola přepisů ve WebView | tablet jako zápisník schůzek |
+| 0 | extract `TeamsRec.Capture.Core` (net10.0) and the ports from today's .NET code, the tests with it | Windows with unchanged behaviour, the core ready for other platforms |
+| 1 | Python without the Windows small things, ICS calendar, CI on Linux | transcription and page fully on Linux |
+| 2 | **Linux:** PipeWire ports (audio, microphone, detection), Avalonia tray, X11 windows, Tauri build, AppImage | the first non-Windows recording |
+| 3 | **Mac:** ScreenCaptureKit (audio + windows), menu bar, mlx / whisper.cpp provider, signing | recording and transcription on Apple Silicon |
+| 4 | **server for remote clients:** sign-in, TLS, upload, LAN / VPN | the basis for tablets |
+| 5 | **tablet:** on-site recording, transcript review in a WebView | the tablet as a meeting notebook |
 
-Fáze 0 a 1 se vyplatí i bez dalších platforem: zpřehlední kód a přepis bude testovaný i na Linuxu.
+Phases 0 and 1 pay off even without other platforms: the code gets clearer and transcription is tested on Linux too.
 
-## 11. Rizika
+## 11. Risks
 
-- **Wayland:** snímání oken jen s portálem a souhlasem. Na Waylandu bude video jmenovek volitelné.
-- **Teams na Linuxu je jen webový:** detekce schůzky závisí na prohlížeči, stejně jako dnešní „jiné aplikace“.
-- **Mac bez CUDA:** kvalita a rychlost přepisu přes mlx / whisper.cpp se musí změřit na skutečných nahrávkách,
-  stejně jako jsme měřili cloudové poskytovatele.
-- **Mobil a hovory:** nahrávání hovorů na tabletu nebude. Kdyby se to změnilo (např. Teams povolí zachycení),
-  přidá se to jako port.
-- **Bezpečnost serveru v síti:** dnes 127.0.0.1 bez přihlášení. Otevřít ho jinak než s tokenem a TLS nejde.
+- **Wayland:** window capture only with the portal and consent. On Wayland the name-label video will be optional.
+- **Teams on Linux is web-only:** meeting detection depends on the browser, the same as today's "other apps".
+- **Mac without CUDA:** the quality and speed of transcription through mlx / whisper.cpp must be measured on real
+  recordings, as we measured the cloud providers.
+- **Mobile and calls:** there will be no call recording on a tablet. Should that change (e.g. Teams allows capture),
+  it is added as a port.
+- **Server security on the network:** today 127.0.0.1 without sign-in. Opening it any other way than with a token and
+  TLS is not possible.
 
-## 12. K rozhodnutí
+## 12. To decide
 
-1. **Jazyk jádra:** doporučuji **.NET** (přepoužití, jeden runtime všude), Kotlin jen při posunu k mobilu jako
-   hlavní platformě.
-2. **Linux jako první:** ano/ne. Doporučuji ano; je nejblíž (Python i CUDA tam už běží).
-3. **Kalendář mimo Windows:** ICS (jednoduché, jen čtení) nebo Microsoft Graph (plný přístup, potřeba registrace
-   aplikace ve firemním tenantu).
-4. **Tablet:** jen kontrola přepisů (rychle), nebo i nahrávání schůzek na místě (víc práce, potřebuje fázi 4).
+1. **Core language:** I recommend **.NET** (reuse, one runtime everywhere), Kotlin only if the focus moves to mobile
+   as the main platform.
+2. **Linux first:** yes/no. I recommend yes; it is the closest (Python and CUDA already run there).
+3. **Calendar outside Windows:** ICS (simple, read-only) or Microsoft Graph (full access, needs an app registration in
+   the company tenant).
+4. **Tablet:** transcript review only (quick), or also on-site meeting recording (more work, needs phase 4).

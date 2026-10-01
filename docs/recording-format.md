@@ -1,49 +1,54 @@
 # teamsrec recording format — v1
 
-Kontrakt mezi `teamsrec-capture` (producent) a `teamsrec-transcribe` (konzument).
-Formát vlastní capture. Každá nekompatibilní změna zvýší `format` a dostane novou sekci v tomto dokumentu.
-Strojově čitelná podoba sidecaru: [`recording.schema.json`](recording.schema.json).
+The contract between `teamsrec-capture` (producer) and `teamsrec-transcribe` (consumer).
+Capture owns the format. Every incompatible change raises `format` and gets a new section in this document.
+Machine-readable form of the sidecar: [`recording.schema.json`](recording.schema.json).
 
-## Adresář a pojmenování
+## Folder and naming
 
 ```
 <OUT_DIR>/
   <YYYY>/
     <MM>/
-      <stem>/                                jedna složka na nahrávku, stem = <YYYY-MM-DD>_<HHMM>_<slug>
-        <stem>.json                          sidecar (metadata nahrávky)      capture
-        <stem>_sys.wav                       systémový zvuk (loopback)         capture
-        <stem>_mic.wav                       mikrofon (jen source=live)        capture
-        <stem>_mix.wav                       mono 16 kHz mix pro ASR           capture
-        <stem>.transcript.json               normalizovaný přepis              transcribe
-        <stem>.speakers.json                 mapování mluvčí → jméno           transcribe (ručně)
-        <stem>.speakers_video.json           časová osa mluvčích z videa       transcribe (import s videem)
-        <stem>.txt                           přepis pro čtení                  transcribe
-        <stem>.srt                           titulky                           transcribe
-        <stem>.summary.md                    zápis, shrnutí, úkoly             transcribe
+      <stem>/                                one folder per recording, stem = <YYYY-MM-DD>_<HHMM>_<slug>
+        <stem>.json                          sidecar (the recording's metadata)    capture
+        <stem>_sys.wav                       system sound (loopback)               capture
+        <stem>_mic.wav                       microphone (source=live, onsite)      capture
+        <stem>_mix.wav                       mono 16 kHz mix for ASR               capture
+        <stem>_screen<N>.mp4                 Teams window videos (live)            capture
+        <stem>.transcript.json               normalised transcript                 transcribe
+        <stem>.speakers.json                 speaker → name mapping                transcribe (by hand / page)
+        <stem>.speakers_video.json           speaker timeline from the video       transcribe (video / window videos)
+        <stem>.txt                           readable transcript                   transcribe
+        <stem>.srt                           subtitles                             transcribe
+        <stem>.summary.md                    minutes, summary, action items        transcribe
+        <stem>.summary.<model>.md            minutes from another model            transcribe
 ```
 
-- Nahrávky jsou členěny do adresářů `<YYYY>/<MM>/<stem>/` podle lokálního času začátku nahrávky. Každá nahrávka má
-  vlastní složku pojmenovanou stemem; všechny její soubory leží v ní a nesou stem v názvu, takže zůstávají
-  jednoznačné i po zkopírování nebo odeslání jinam. Smazání či přesun nahrávky je operace s jednou složkou.
-- `stem` = `<YYYY-MM-DD>_<HHMM>_<slug>`; čas je lokální čas začátku nahrávky.
-- `slug`: název schůzky po NFKD normalizaci, bez diakritiky, `[^A-Za-z0-9]+` → `-`, lowercase, max 60 znaků, fallback `teams-call`.
-- Nahrávka je **hotová**, až když existuje sidecar `.json`. Do té doby do adresáře nikdo jiný nesahá. Capture zapisuje sidecar jako poslední krok.
-- Nahrávky kratší než limit (výchozí 120 s) a zrušené nahrávky capture smaže bez sidecaru.
+- Recordings are split into folders `<YYYY>/<MM>/<stem>/` by the local start time of the recording. Each recording
+  has its own folder named by its stem; all its files lie in it and carry the stem in their name, so they stay
+  unambiguous when copied or sent elsewhere. Deleting or moving a recording is an operation on one folder.
+- `stem` = `<YYYY-MM-DD>_<HHMM>_<slug>`; the time is the local start time of the recording.
+- `slug`: the meeting title after NFKD normalisation, without diacritics, `[^A-Za-z0-9]+` → `-`, lower case, at most 60
+  characters, fallback `teams-call`.
+- A recording is **complete** only once the sidecar `.json` exists. Until then nobody else touches the folder. Capture
+  writes the sidecar as its last step.
+- Recordings shorter than the limit (default 120 s) and aborted recordings are deleted by capture without a sidecar.
 
-### Přejmenování
+### Renaming
 
-Název schůzky lze změnit dodatečně (`teamsrec-transcribe rename`, kontrolní stránka). Stem se přepočítá ze
-stejného data a času a nového slugu; složka i všechny soubory `<stem>.*` se přejmenují, sidecar (`title`, `slug`,
-názvy stop a mixu), nadpisy zápisů a odkazy na stem v `_speakers/voiceprints.json` se opraví. Stejný slug
-z jinak zapsaného názvu složku nemění. Kolize s existující složkou se odmítne.
+A meeting's title can be changed afterwards (`teamsrec-transcribe rename`, the review page), also before the
+transcript exists. The stem is recomputed from the same date and time and the new slug; the folder and all `<stem>.*`
+files are renamed, and the sidecar (`title`, `slug`, names of the tracks and the mix), the minutes' headings and the
+stem references in `_speakers/voiceprints.json` are updated. The same slug from a differently written title does not
+change the folder. A clash with an existing folder is refused.
 
-## Retence
+## Retention
 
-Audio je dočasné, přepis trvalý. WAV soubory (`_sys`, `_mic`, `_mix`) lze po úspěšné transkripci smazat
-(ručně nebo příkazem `purge-audio` v teamsrec-transcribe). Sidecar `.json`, `.transcript.json`,
-`.speakers.json`, `.txt`, `.srt` a `.summary.md` zůstávají. Konzumenti proto musí počítat s tím, že soubory
-uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem o tom, že nahrávka proběhla.
+Audio is temporary, the transcript permanent. The WAV files (`_sys`, `_mic`, `_mix`) and the window videos can be
+deleted after a successful transcription (by hand or with `purge-audio` in teamsrec-transcribe). The sidecar `.json`,
+`.transcript.json`, `.speakers.json`, `.txt`, `.srt` and `.summary*.md` stay. Consumers must therefore expect that the
+files listed in `tracks` and `mix` may no longer exist; the sidecar remains the record that the recording took place.
 
 ## Sidecar `<stem>.json`
 
@@ -51,7 +56,7 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 {
   "format": 1,
   "app": "teamsrec-capture",
-  "app_version": "0.1.0",
+  "app_version": "1.0.5",
   "title": "Týdenní sync",
   "slug": "tydenni-sync",
   "source": "live",
@@ -72,66 +77,70 @@ uvedené v `tracks` a `mix` už nemusí existovat; sidecar zůstává záznamem 
 }
 ```
 
-| Pole | Typ | Povinné | Význam |
+| Field | Type | Required | Meaning |
 |---|---|---|---|
-| `format` | int | ano | verze tohoto formátu, nyní `1` |
-| `app`, `app_version` | string | ano | kdo nahrávku pořídil |
-| `title` | string | ano | název schůzky (z okna Teams, kalendáře, nebo zadaný ručně) |
-| `slug` | string | ano | slug použitý ve jménech souborů |
-| `source` | enum | ano | `live` = hovor v Teams, `playback` = přehrávání uloženého záznamu, `manual` = ruční nahrávání bez detekce, `import` = externí soubor (např. záznam schůzky stažený z Teams), `onsite` = schůzka na místě z jednoho mikrofonu (jen stopa `mic`, na ní jsou všichni, uživatel se z ní nepojmenovává; jména z otisků a diarizace) |
-| `start`, `end` | ISO 8601 lokální čas bez zóny | ano | začátek a konec nahrávání |
-| `duration_s` | int | ano | délka v sekundách |
-| `stop_reason` | enum | ano | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `onsite_upgraded` (schůzka na místě přešla do Teams), `n/a` (u `import`) |
-| `continues` | string | ne | stem předchozí části: živá nahrávka navazuje na nahrávku na místě, která přešla do hovoru v Teams |
-| `language` | BCP‑47 | ne | očekávaný jazyk schůzky, výchozí `cs` |
-| `tracks.sys` | track | ne* | loopback; u `playback` a `manual` jediná stopa; u `import` a `onsite` chybí (*povinné pro vše kromě `import` a `onsite`) |
-| `tracks.mic` | track | ne | mikrofon = uživatel; chybí u `playback` |
-| `mix` | track | ne | mono 16 kHz součet všech stop, vstup pro cloudové ASR; chybí, když mix selhal; u `import` jediná a povinná stopa |
-| `origin_file` | string | ne | jen `import`: původní název souboru, ze kterého nahrávka vznikla |
-| `origin_path` | string | ne | jen `import`: absolutní cesta k původnímu souboru v době importu |
-| `metadata_source` | enum | ne | jen `import`: odkud jsou `title` a `start`: `teams-name`, `container`, `file`, `user` |
-| `participants[]` | objekt | ne | z kalendáře, pokud dostupné; `role` ∈ `organizer`, `required`, `optional`, `self` |
-| `call_app` | string | ne | hovor mimo Teams: aplikace (`Zoom`, `Webex`, `Slack`, `WhatsApp`, `Chrome (Meet – …)` …); u Teams chybí |
-| `audio_purged` | datum | ne | zvuk a videa oken smazány (`purge-audio`); přepis, zápisy a jména zůstávají |
-| `audio_silent` | bool | ne | `true` = ve všech stopách bylo jen digitální ticho (zařízení nedodalo data); nahrávka se nepřepisuje |
-| `audio_reopens` | int | ne | kolikrát musel hlídač znovu otevřít zvukové streamy |
-| `teams_windows_seen[]` | string | ne | ladicí informace |
+| `format` | int | yes | version of this format, now `1` |
+| `app`, `app_version` | string | yes | who made the recording |
+| `title` | string | yes | meeting title (from the Teams window, the calendar, or typed by hand) |
+| `slug` | string | yes | the slug used in the file names |
+| `source` | enum | yes | `live` = a Teams call, `playback` = playing back a stored recording, `manual` = manual recording without detection, `import` = an external file (e.g. a meeting recording downloaded from Teams), `onsite` = an on-site meeting from one microphone (only the `mic` track, everybody is on it, the user is not named from it; names from voice prints and diarization) |
+| `start`, `end` | ISO 8601 local time without zone | yes | start and end of recording |
+| `duration_s` | int | yes | length in seconds |
+| `stop_reason` | enum | yes | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `onsite_upgraded` (the on-site meeting moved to Teams), `n/a` (for `import`) |
+| `continues` | string | no | stem of the previous part: a live recording continuing an on-site recording that turned into a Teams call |
+| `language` | BCP‑47 | no | expected language of the meeting, default `cs` |
+| `tracks.sys` | track | no* | loopback; the only track for `playback` and `manual`; missing for `import` and `onsite` (*required for all but `import` and `onsite`) |
+| `tracks.mic` | track | no | microphone = the user; missing for `playback` |
+| `mix` | track | no | mono 16 kHz sum of all tracks, input for ASR; missing when the mix failed; for `import` the only and required track |
+| `origin_file` | string | no | only `import`: the original name of the file the recording came from |
+| `origin_path` | string | no | only `import`: absolute path of the original file at import time |
+| `metadata_source` | enum | no | only `import`: where `title` and `start` come from: `teams-name`, `container`, `file`, `user` |
+| `participants[]` | object | no | from the calendar, if available; `role` ∈ `organizer`, `required`, `optional`, `self` |
+| `call_app` | string | no | a call outside Teams: the app (`Zoom`, `Webex`, `Slack`, `WhatsApp`, `Chrome (Meet – …)` …); missing for Teams |
+| `audio_purged` | date | no | audio and window videos deleted (`purge-audio`); transcript, minutes and names stay |
+| `audio_silent` | bool | no | `true` = every track held only digital silence (the device delivered no data); the recording is not transcribed |
+| `audio_reopens` | int | no | how many times the watchdog had to reopen the audio streams |
+| `teams_windows_seen[]` | string | no | debugging information |
 
-Objekt `track`: `file` (jen jméno souboru, ne cesta), `sample_rate` (Hz), `channels` (1 nebo 2). WAV je vždy PCM 16‑bit.
+The `track` object: `file` (file name only, no path), `sample_rate` (Hz), `channels` (1 or 2). WAV is always 16-bit PCM.
 
-## Importované nahrávky (`source: import`)
+## Imported recordings (`source: import`)
 
-Záznam schůzky pořízený samotným Teams (soubor `<Název>-YYYYMMDD_HHMMSS-Meeting Recording.mp4`) nebo jiný
-audio/video soubor se do adresáře nahrávek dostane příkazem `teamsrec-transcribe import <soubor>`:
+A meeting recording made by Teams itself (file `<Title>-YYYYMMDD_HHMMSS-Meeting Recording.mp4`) or another audio/video
+file gets into the recordings folder with `teamsrec-transcribe import <file>`:
 
-- `title` a `start` se vezmou z názvu souboru podle vzoru Teams; když vzor nesedí, `title` = název souboru bez přípony a `start` = čas změny souboru. Obojí lze přepsat parametry.
-- Zvuk se převede na `<stem>_mix.wav` (mono 16 kHz PCM); `tracks` je prázdný objekt, `stop_reason` = `n/a`, `origin_file` = původní název.
-- Diarizace pracuje jen nad `mix`, stopa `mic` neexistuje, takže mluvčí `me` se neurčuje automaticky.
-- Původní soubor se nekopíruje ani nemaže.
+- `title` and `start` are taken from the file name by the Teams pattern; when the pattern does not match, `title` =
+  the file name without extension and `start` = the file's modification time. Both can be overridden by parameters.
+- The audio is converted to `<stem>_mix.wav` (mono 16 kHz PCM); `tracks` is an empty object, `stop_reason` = `n/a`,
+  `origin_file` = the original name.
+- Diarization works only on `mix`; there is no `mic` track, so the user is not named automatically.
+- The original file is neither copied nor deleted.
 
-### Ad-hoc soubory bez sidecaru
+### Ad-hoc files without a sidecar
 
-Pravidlo: **sidecar vytvoří ten nástroj, který se nahrávky dotkne jako první.** Nahrávka bez sidecaru není chyba,
-ale vstup pro import. Platí pro libovolné audio nebo video (mp4, m4a, mp3, wav, webm, mkv…), nejen pro záznamy Teams.
+The rule: **the sidecar is created by the tool that touches the recording first.** A recording without a sidecar is not
+an error but input for an import. This holds for any audio or video (mp4, m4a, mp3, wav, webm, mkv…), not only Teams
+recordings.
 
-- `teamsrec-transcribe transcribe <soubor>` nad souborem bez sidecaru provede import implicitně a pokračuje přepisem.
-  Není potřeba volat `import` zvlášť.
-- Metadata se odvozují v tomto pořadí a lze je přepsat parametry `--title`, `--start`, `--language`, `--participants`:
-  1. vzor názvu záznamu Teams (`<Název>-YYYYMMDD_HHMMSS-Meeting Recording`),
-  2. `creation_time` z metadat kontejneru (ffprobe),
-  3. název souboru bez přípony jako `title` a čas změny souboru jako `start`.
-- Sidecar dostane navíc `origin_path` (absolutní cesta k původnímu souboru) a `metadata_source` (`teams-name`,
-  `container`, `file`, `user`), aby bylo vidět, jak spolehlivé `title` a `start` jsou.
-- Nahrávka se vždy normalizuje do `<OUT_DIR>/YYYY/MM/<stem>/` s `_mix.wav`; jiné rozložení neexistuje.
-  Původní soubor zůstává na místě.
-- **Schránka `<OUT_DIR>/_inbox/`:** cokoli sem uživatel přetáhne, se importuje při dalším běhu
-  `teamsrec-transcribe process` (nebo watcherem), soubor se po úspěšném importu přesune do `_inbox/done/`.
-- Analýza mluvčích z videa se pokusí jen o rozložení Teams. Když ve videu nenajde zvýrazněné jmenovky
-  (Zoom, Meet, jiný layout), tiše skončí a mluvčí dá diarizace.
+- `teamsrec-transcribe transcribe <file>` on a file without a sidecar imports it implicitly and goes on with the
+  transcription. There is no need to call `import` separately.
+- The metadata are derived in this order and can be overridden by `--title`, `--start`, `--language`, `--participants`:
+  1. the Teams recording name pattern (`<Title>-YYYYMMDD_HHMMSS-Meeting Recording`),
+  2. `creation_time` from the container's metadata (ffprobe),
+  3. the file name without extension as `title` and the file's modification time as `start`.
+- The sidecar also gets `origin_path` (absolute path of the original file) and `metadata_source` (`teams-name`,
+  `container`, `file`, `user`), so it shows how reliable `title` and `start` are.
+- The recording is always normalised into `<OUT_DIR>/YYYY/MM/<stem>/` with `_mix.wav`; no other layout exists. The
+  original file stays where it is.
+- **Inbox `<OUT_DIR>/_inbox/`:** whatever the user drops here is imported at the next run of
+  `teamsrec-transcribe process` (or by a watcher); after a successful import the file moves to `_inbox/done/`.
+- Speaker analysis from the video only tries the Teams layout. When it finds no highlighted name labels in the video
+  (Zoom, Meet, another layout), it quietly ends and the diarization gives the speakers.
 
-## Přepis `<stem>.transcript.json`
+## Transcript `<stem>.transcript.json`
 
-Normalizovaný výstup každého transkripčního providera. Vše za providerem (pojmenování mluvčích, export, summary) pracuje jen s tímto souborem.
+The normalised output of every transcription provider. Everything behind the provider (naming speakers, export,
+summary) works only with this file.
 
 ```json
 {
@@ -149,39 +158,44 @@ Normalizovaný výstup každého transkripčního providera. Vše za providerem 
 }
 ```
 
-- `speaker`: identifikátor providera; `me` je vyhrazeno pro uživatele (odvozeno ze stopy `mic`, když existuje).
-- `track`: `sys`, `mic`, nebo `mix`, podle toho, ze které stopy segment vznikl.
-- `words[]` v segmentu je volitelné: `{ "start", "end", "word", "score" }`.
-- Časy jsou sekundy od začátku nahrávky, společné pro všechny stopy.
-- `language` v segmentu je volitelné (BCP‑47). Přítomné, když byl přepis dělán **per mluvčí**: jazyk každého mluvčího se
-  určí z jeho nejdelších úseků, přepis se spustí jednou pro každý přítomný jazyk a segmenty se poskládají podle mluvčího.
-  Kořenové `language` je pak jazyk většinový. (Rozhodnutí 2026-09-04, viz teamsrec-transcribe `lab/FINDINGS.md`.)
+- `speaker`: the provider's identifier; `me` is reserved for the user (derived from the `mic` track when it exists).
+  A segment the diarization gave nobody has no speaker (`null`); it is listed as `UNKNOWN` in `speakers`, exported as
+  `?`, and can be given a speaker later (then `"assigned": "manual"`).
+- `track`: `sys`, `mic` or `mix`, by the track the segment came from.
+- `words[]` in a segment is optional: `{ "start", "end", "word", "score" }`.
+- Times are seconds from the start of the recording, shared by all tracks.
+- `language` in a segment is optional (BCP‑47). It is present when the transcript was made **per speaker**: each
+  speaker's language is determined from their longest stretches, the transcription runs once per language present and
+  the segments are put together by speaker. The root `language` is then the majority language. (Decision 2026-09-04,
+  see teamsrec-transcribe `lab/FINDINGS.md`.)
 
-### Kalendář (od 2026-09-14, volitelné)
+### Calendar (since 2026-09-14, optional)
 
-S `[calendar] outlook = true` ve sdílené konfiguraci si capture při startu hovoru a transcribe při importu
-vezmou z klasického Outlooku na tomto počítači (COM, lokálně, bez sítě) schůzku běžící v čase začátku
-(začátek −10 min … konec +5 min; přednost má ta, která čas skutečně obsahuje, pak schůzky Teams). Sidecar pak
-má `participants` (jména účastníků) a
+With `[calendar] outlook = true` in the shared configuration, capture at the start of a call and transcribe at import
+take from classic Outlook on this PC (COM, locally, no network) the meeting running at the start time (start −10 min …
+end +5 min; the one that really contains the time wins, then Teams meetings). The sidecar then has `participants`
+(participants' names) and
 
 ```json
 "calendar": {"source": "outlook", "subject": "WFMS sync", "organizer": "Jana Nováková",
              "start": "2026-09-14T08:30", "end": "2026-09-14T09:15"}
 ```
 
-Spárování: nejdřív podle názvu (titulek okna Teams u živého hovoru, název souboru u importu, shoda s předmětem
-schůzky i přibližná) – `match: "title"`; teprve bez shody podle času – `match: "time"`, což je jen odhad (ad-hoc
-hovor během naplánované schůzky, dvě paralelní schůzky). `status` je `auto` | `confirmed`; kontrolní stránka
-ukazuje panel Schůzka se zdroji (`title_source`: `calendar` | `window` | `manual` | `file`, u účastníků `source`:
-`calendar` | `manual`) a umí spojení potvrdit, odpojit (odebere účastníky z kalendáře, název zůstává) nebo spojit
-s jinou schůzkou (`candidates` v sidecaru, jinak živý dotaz do Outlooku; název, účastníci i složka se přizpůsobí).
-Do zápisu jdou z kalendáře organizátor a plánovaný čas. Bez Outlooku (nový Outlook bez COM, jiný stroj) se nic nemění.
+Matching: first by title (the Teams window title of a live call, the file name of an import; equal or approximately
+equal to the meeting's subject) – `match: "title"`; only without a match by time – `match: "time"`, which is just a
+guess (an ad-hoc call during a scheduled meeting, two parallel meetings). `status` is `auto` | `confirmed`; the review
+page shows a Schůzka panel with the sources (`title_source`: `calendar` | `window` | `manual` | `file`, for participants
+`source`: `calendar` | `manual`) and can confirm the link, detach it (removes the calendar participants, the title
+stays) or link another meeting (`candidates` in the sidecar, otherwise a live query to Outlook; title, participants and
+folder follow). The organiser and the planned time from the calendar go into the minutes. Without Outlook (the new
+Outlook without COM, another machine) nothing changes.
 
-### Snímky oken Teams `<stem>_screen<N>.mp4` (živé nahrávky, od 2026-09-14)
+### Teams window videos `<stem>_screen<N>.mp4` (live recordings, since 2026-09-14)
 
-Capture během živého hovoru ukládá každé okno Teams jako video se 2 snímky za sekundu (x264, plátno
-1600×900 se zachováním poměru stran, černé okraje). Teams má oken víc – hovor, vyskakovací galerie, sdílený
-obsah – a ta vznikají a zanikají během hovoru, proto má každé okno vlastní soubor a v sidecaru položku:
+During a live call (and while playing back a recording) capture saves each Teams window as a video at 2 frames per
+second (x264, a 1600×900 canvas keeping the aspect ratio, black borders). Teams has several windows – the call, a
+pop-out gallery, shared content – and they come and go during a call, so each window has its own file and an entry in
+the sidecar:
 
 ```json
 "screens": [
@@ -190,59 +204,60 @@ obsah – a ta vznikají a zanikají během hovoru, proto má každé okno vlast
 ]
 ```
 
-`start_offset_s` je posun začátku videa vůči začátku nahrávky. Minimalizované okno nejde sejmout, opakuje se
-poslední snímek, aby časová osa seděla se zvukem. Transcribe každé video okna schůzky (okna s navigací Teams, např. Kalendář, se přeskakují) projede analýzou
-aktivního řečníka: v živém okně dostane mluvící dlaždice tenký rámeček v barvě Teams (na rozdíl od staženého
-záznamu, kde se barví jmenovka), jmenovka se čte OCR z levého dolního rohu dlaždice (kandidáti jmen = registr osob
-+ účastníci). Vlastní dlaždice uživatele rámeček nedostává, toho pojmenuje mikrofonní stopa. Osy se posunou a sloučí
-do `speakers_video.json` se `source: "teams-screen"`. Ověřeno 2026-09-16 na živém standupu.
+`start_offset_s` is the video's offset from the start of the recording. A minimised window cannot be captured; the last
+frame is repeated so that the timeline matches the audio. A video found on disk after the capture process crashed has
+`"recovered": true`, `frames: -1` and no `end_offset_s`. Transcribe runs every meeting-window video (windows with Teams
+navigation, e.g. Calendar, are skipped) through the active-speaker analysis: in a live window the speaking tile gets a
+thin outline in the Teams accent colour (unlike a downloaded recording, where the name label is coloured); the name
+label is read by OCR from the tile's bottom-left corner (name candidates = the people registry + participants). The
+user's own tile never gets the outline; the microphone track names the user. The timelines are shifted and merged into
+`speakers_video.json` with `source: "teams-screen"`. Verified 2026-09-16 on a live stand-up.
 
-### Zdroje mluvčích a jejich priorita
+### Speaker sources and their priority
 
-Přepis zvuku je vždy stejný. Liší se jen, odkud se bere „kdo mluví“, a to podle toho, co nahrávka má, ne podle přípony:
+The audio transcription is always the same. Only where "who speaks" comes from differs, by what the recording has, not
+by its extension:
 
-1. `speakers_video.json` (záznam Teams s videem nebo snímaná okna) – segment, který zvýraznění přímo pokrývá
-   (≥ 30 % délky), dostane to jméno. Celé diarizační označení se přejmenuje až ve druhém kole, po mikrofonu, a jen
-   když video jednomu jménu připisuje aspoň 10 s, většinu pokrytého času a aspoň čtvrtinu všeho, co označení řeklo
-   (2026-09-16: krátké zvýraznění jinak „vlastnilo“ 47 minut cizí řeči).
-2. Stopa `mic` (živá nahrávka) – diarizační označení, které se kryje s aktivitou mikrofonu, dostane jméno
-   uživatele z konfigurace (`[user] name`). Ověřeno 2026-09-10: 89 % aktivity u uživatele, 13–21 % u ostatních.
-3. Diarizace – vždy se spouští, slouží jako záloha pro segmenty bez překryvu a pro účastníky, kteří na videu nejsou.
-   Ti zůstávají jako `SPEAKER_XX`, dokud je uživatel nepojmenuje v `speakers.json`.
+1. Track `mic` (live recording) – the diarization label that coincides with microphone activity gets the user's name
+   from the configuration (`[user] name`); also a single reply (≥ 1.5 s) with the microphone active ≥ 80 %, including one
+   the diarization gave nobody. "Active" = at least 10 dB above the track's floor **and** at least −55 dBFS (a headset
+   with a noise gate sends a −80…−90 dB residue while the others talk). Verified 2026-09-10: 89 % activity for the user,
+   13–21 % for the others.
+2. `speakers_video.json` (a Teams recording with video, or the window videos) – a segment the highlight covers directly
+   (≥ 30 % of its length) gets that name, unless the microphone already named it (the microphone wins: Teams never
+   highlights the user's own tile). A whole diarization label is renamed only in a second round, and only when the
+   video gives one name at least 10 s, most of the covered time and at least a quarter of all the label said
+   (2026-09-16: a short highlight otherwise "owned" 47 minutes of someone else's speech). Names from a live window count
+   only when they match a participant.
+3. Diarization – always runs; it is the fallback for segments without overlap and for participants not in the video.
+   They stay `SPEAKER_XX` until the user names them in `speakers.json`.
+4. **Voice prints** (`_speakers/voiceprints.json`, since 2026-09-11, opt-in): the diarization returns an embedding per
+   label (pyannote community-1); the transcript stores it in `speaker_embeddings` (key = the resulting name/label, a unit
+   vector). When a label gets a person **confirmed** (the page, `label-speakers`, the user's microphone track), the embedding is stored under the
+   person (at most 10 per person, with the stem and label of origin; near duplicates ≥ 0.95 are dropped). In a new
+   recording unknown labels are compared by cosine similarity; a match ≥ `threshold` with a lead ≥ `margin` over the
+   second best person writes the person into `speakers.json` (like a manual assignment, can be corrected) and into the
+   transcript's `voice_matches` `{label: {person, score}}`. Source `voiceprint` in `speaker_sources`.
 
-4. **Hlasové otisky** (`_speakers/voiceprints.json`, od 2026-09-11): diarizace vrací pro každé označení
-   embedding (pyannote community-1); přepis ho ukládá v `speaker_embeddings` (klíč = výsledné jméno/označení,
-   jednotkový vektor). Když označení dostane osobu (stránka, `label-speakers`, mikrofonní stopa uživatele),
-   embedding se uloží pod osobu (nejvýš 10 na osobu, se stemem a označením původu). U nové nahrávky se
-   neznámá označení porovnají kosinovou podobností; shoda ≥ `threshold` s odstupem ≥ `margin` od druhé nejlepší
-   osoby zapíše osobu do `speakers.json` (jako ruční přiřazení, lze opravit) a do přepisu `voice_matches`
-   `{označení: {person, score}}`. Zdroj `voiceprint` v `speaker_sources`.
+The transcript may have `removed_speakers`: a list of labels whose replies the user deleted as noise
+(`{"label", "segments", "at"}`); their segments are not in the transcript. A new transcript (`--force`) brings them back.
+`merged_speakers` records merges of labels of one person; each moved segment keeps `merged_from`, so a merge can be
+undone.
 
-Plánované zdroje:
+## Speakers from video `<stem>.speakers_video.json`
 
-5. **Snímání okna Teams při živé nahrávce** (teamsrec-capture, .NET port): během hovoru se ~2× za sekundu snímá
-   okno Teams s galerií účastníků a ukládá jako malé video (`<stem>_screen.mp4`, 720p, 2 fps). Po hovoru se
-   zpracuje stejnou analýzou jako stažený záznam a vznikne `speakers_video.json`. Při sdílení obrazovky Teams
-   zobrazuje galerii v druhém (vyskakovacím) okně – snímá se to okno Teams, ve kterém jsou jmenovky, ne nutně hlavní.
-   Minimalizované okno snímat nelze; takové úseky kryje diarizace a hlasové otisky.
-
-Přepis může mít `removed_speakers`: seznam označení, jejichž repliky uživatel smazal jako šum
-(`{"label", "segments", "at"}`); jejich segmenty v přepisu nejsou. Nový přepis (`--force`) je obnoví.
-
-## Mluvčí z videa `<stem>.speakers_video.json`
-
-Vzniká při `import` záznamu Teams s videem. Teams zvýrazňuje jmenovku aktivního mluvčího; analýza snímků dá pro každé
-jméno intervaly, kdy mluvilo. Je to **přednostní zdroj mluvčích**: segmentům přepisu se přiřadí jméno s největším
-překryvem, diarizace slouží jen jako záloha pro segmenty bez překryvu. Jména jsou z OCR, upřesněná seznamem `participants`.
+Made at `import` of a Teams recording with video (and from the window videos of live recordings). Teams highlights the
+active speaker's name label; the frame analysis gives intervals per name when that person spoke. Segments of the
+transcript get the name with the largest overlap; names are from OCR, refined by the `participants` list.
 
 ```json
 { "format": 1, "source": "teams-video", "fps": 2,
   "speakers": { "Jana Nováková": [[12.0, 15.5], [40.0, 61.5]], "Petr Svoboda": [[15.5, 40.0]] } }
 ```
 
-## Lidé `_speakers/people.json`
+## People `_speakers/people.json`
 
-Registr osob mimo nahrávky, jeden soubor pro celý `OUT_DIR` (vedle něj budou později hlasové vzorky):
+A registry of people outside the recordings, one file for the whole `OUT_DIR`:
 
 ```json
 { "format": 1, "people": [
@@ -250,25 +265,33 @@ Registr osob mimo nahrávky, jeden soubor pro celý `OUT_DIR` (vedle něj budou 
 ] }
 ```
 
-`display` = `first` | `full` | `nick` | prázdné (výchozí z konfigurace `[people] display`, výchozí `nick`).
-Režim `nick` bez přezdívky znamená jméno. Přepis i `speakers.json` uchovávají identifikátor osoby (`id`) nebo
-doslovné jméno z videa či mikrofonu; zobrazovaná podoba se určuje až při exportu a zápisu. Neregistrovaná jména se
-tisknou doslova.
+`display` = `first` | `full` | `nick` | empty (default from the configuration `[people] display`, default `nick`). Mode
+`nick` without a nickname means the first name. The transcript and `speakers.json` keep the person's identifier (`id`)
+or the literal name from the video or the microphone; the displayed form is decided only at export and summary time.
+Unregistered names are printed literally. A person may have `"voiceprint": false` (opted out of voice recognition).
 
-Soubor `_speakers/voiceprints.json`: `{"format": 1, "model": "<diarizační model>", "people": {"<id>": [{"v": [...],
-"stem": "...", "label": "...", "added": "..."}]}}`. Odvozený, smazatelný; otisky jedné osoby maže
+File `_speakers/voiceprints.json`: `{"format": 1, "model": "<diarization model>", "people": {"<id>": [{"v": [...],
+"stem": "...", "label": "...", "added": "..."}]}}`. Derived, deletable; one person's prints are deleted by
 `people forget-voice`.
 
-## Mluvčí `<stem>.speakers.json`
+## Speakers `<stem>.speakers.json`
 
-Ruční mapování po transkripci. Když existuje, export a summary používají jména místo identifikátorů.
+Manual mapping after transcription. When it exists, export and summary use names instead of identifiers.
 
 ```json
 { "SPEAKER_00": "Jana Nováková", "SPEAKER_01": "Petr Svoboda", "me": "Jan Novák" }
 ```
 
-## Jazyk po mluvčích (přepis)
+## Language per speaker (transcript)
 
-`<stem>.transcript.json` má nahoře `language` (jazyk schůzky) a `languages` (všechny jazyky v přepisu).
-U smíšené schůzky může mít replika vlastní `segments[].language`, když její mluvčí jasně mluví jiným jazykem
-z nastavených (`[transcribe] per_speaker_language`); chybějící `language` u repliky = jazyk schůzky.
+`<stem>.transcript.json` has `language` at the top (the meeting's language) and `languages` (all languages in the
+transcript). In a mixed meeting a reply can have its own `segments[].language` when its speaker clearly speaks another
+of the configured languages (`[transcribe] per_speaker_language`); a missing `language` on a reply = the meeting's
+language.
+
+## Capture status `%TEMP%\teamsrec-capture.json` (not part of a recording)
+
+Written by teamsrec-capture on every change, read by the review server: `{"app", "version", "pid", "running",
+"recording", "title", "stem", "source", "started", "updated"}`. A file whose `pid` is no longer running counts as
+"not running". The review page shows a red dot while `recording` is true, and the server can stop its processing
+for the recording (`[transcribe] when_recording`).

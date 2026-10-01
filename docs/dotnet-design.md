@@ -1,116 +1,125 @@
-# .NET návrh nahrávací aplikace (teamsrec-capture)
+# .NET design of the recording app (teamsrec-capture)
 
-Tento dokument vysvětluje, jak je postavená .NET verze nahrávací aplikace ve složce [`dotnet/`](../dotnet) a proč.
-Je to port Python prototypu [`legacy/teamsrec.py`](../legacy/teamsrec.py): chování, prahy a hlášky jsou převzaté,
-datový výstup se řídí kontraktem [recording-format.md](recording-format.md), takže nahrávky z .NET verze zpracuje
-teamsrec-transcribe beze změny.
+This document explains how the .NET version of the recording app in [`dotnet/`](../dotnet) is built and why. It is a
+port of the Python prototype [`legacy/teamsrec.py`](../legacy/teamsrec.py): behaviour, thresholds and messages are
+taken over, and the data output follows the contract [recording-format.md](recording-format.md), so teamsrec-transcribe
+processes recordings from the .NET version unchanged.
 
-## Proč .NET
+## Why .NET
 
-- **Jeden spustitelný soubor** bez Pythonu, virtuálního prostředí a trampolíny `pythonw` (dnes jsou v seznamu procesů
-  dva procesy a jednou jsme omylem zabili ten skutečný).
-- **Windows API přímo**: WASAPI a Core Audio přes NAudio, registr, okna a COM (Outlook) bez mostů jako pywin32/pycaw.
-- **Stabilita**: UI (WinForms, ikona v liště) bez Tcl/Tk; snímání oken běží stejně jako v prototypu v samostatném
-  procesu, takže jeho pád nahrávání zvuku neshodí.
-- Instalace do budoucna jako `winget install` (roadmapa).
+- **One executable** without Python, a virtual environment and the `pythonw` trampoline (the prototype showed two
+  processes in the process list, and once we killed the real one by mistake).
+- **Windows APIs directly**: WASAPI and Core Audio through NAudio, the registry, windows and COM (Outlook) without
+  bridges such as pywin32/pycaw.
+- **Stability**: the UI (WinForms, tray icon) without Tcl/Tk; window capture runs in a separate process as in the
+  prototype, so its crash cannot bring the audio recording down.
+- Installation later as `winget install` (roadmap).
 
-## Přehled
+## Overview
 
 ```
 dotnet/
   TeamsRec.Capture.slnx
-  src/TeamsRec.Capture/            aplikace (net10.0-windows, WinForms, NAudio, Tomlyn)
-    Core/          sdílené typy a rozhraní (IClock, INotifier, IAudioSource, TrackInfo, CallApp, Log, ...)
-    Config/        konfigurace z teamsrec.toml, zápis se zachováním komentářů, model stránky nastavení
-    Audio/         zařízení, nahrávač (smyčka systému + mikrofon), test mikrofonu, mikrofon hovoru
-    Detection/     kdo drží mikrofon (registr), okna Teams, předvstupní obrazovka, hovory v jiných aplikacích
-    Calendar/      Outlook přes COM, výběr schůzky podle názvu a času
-    Screen/        snímání oken Teams do MP4 (PrintWindow -> ffmpeg)
-    Recording/     hlídač zvuku, mix, dokončení nahrávky (sidecar), obnova po pádu
-    Contract/      pojmenování (stem, složky), sidecar JSON podle kontraktu
-    Settings/      lokální stránka nastavení (HttpListener + settings.html)
-    App/           ikona v liště, hlavní smyčka, dialogy, log
-    Program.cs     jedna instance (mutex), log, obnova, start
-  tests/TeamsRec.Capture.Tests/    xUnit - logika bez hardwaru
+  src/TeamsRec.Capture/            the app (net10.0-windows, WinForms, NAudio, Tomlyn)
+    Core/          shared types and interfaces (IClock, INotifier, IAudioSource, TrackInfo, CallApp, Log, ...)
+    Config/        configuration from teamsrec.toml, writing with comments kept, the settings page model, file watcher
+    Audio/         devices, recorder (system loopback + microphone), microphone test, the call's microphone
+    Detection/     who holds the microphone (registry), Teams windows, the join screen, calls in other apps
+    Calendar/      Outlook through COM, picking the meeting by title and time
+    Screen/        capturing Teams windows to MP4 (PrintWindow -> ffmpeg), in a child process
+    Recording/     audio watchdog, mix, finishing a recording (sidecar), recovery after a crash
+    Contract/      naming (stem, folders), sidecar JSON by the contract
+    Settings/      fallback local settings page (HttpListener + settings.html)
+    App/           tray icon, main loop, dialogs, log, status file for the review page
+    Program.cs     single instance (mutex), log, recovery, start
+  tests/TeamsRec.Capture.Tests/    xUnit - logic without hardware
 ```
 
-Moduly odpovídají částem prototypu jedna ku jedné, takže se dá snadno dohledat, odkud které chování pochází
-(tabulka v [`dotnet/PARITY.md`](../dotnet/PARITY.md)).
+The modules match parts of the prototype one to one, so it is easy to trace where a behaviour comes from (table in
+[`dotnet/PARITY.md`](../dotnet/PARITY.md)).
 
-## Tok jedné nahrávky
+## The flow of one recording
 
 ```
- MonitorLoop (každé 3 s)
-   │  MicUsers.TeamsInUse() / MicUsers.Current()  ← registr ConsentStore: kdo právě drží mikrofon
-   │  WindowTitles + CallDetector                 ← předvstupní obrazovka? schůzka v prohlížeči?
+ MonitorLoop (every 3 s)
+   │  MicUsers.TeamsInUse() / MicUsers.Current()  ← ConsentStore registry: who holds the microphone right now
+   │  WindowTitles + CallDetector                 ← join screen? a meeting in a browser?
    ▼
- start ── název: okno Teams → Outlook.Meeting() (podle názvu, pak času) → název aplikace
-   │      mikrofon: Devices.CallInputDevice()      ← Core Audio: z kterého mikrofonu nahrává aplikace hovoru
-   │      Recorder.Start()                         ← WASAPI loopback (_sys.wav) + mikrofon (_mic.wav)
-   │      ScreenCapture (jen Teams)                ← _screen<N>.mp4, 2 fps
+ start ── title: Teams window → Outlook.Meeting() (by title, then time) → the app's name
+   │      microphone: Devices.CallInputDevice()    ← Core Audio: which microphone the call app records from
+   │      Recorder.Start()                         ← WASAPI loopback (_sys.wav) + microphone (_mic.wav)
+   │      ScreenCaptureProcess (Teams and playback) ← _screen<N>.mp4, 2 fps, in a child process
    ▼
- běh ──── Watchdog.Tick()        ← data nechodí → reopen s rostoucí pauzou; mrtvý mikrofon → žlutá ikona
-   │      Watchdog.FollowCallMic()← aplikace hovoru přepnula sluchátka → přepnout mikrofonní stopu
-   │      konec: aplikace pustí mikrofon (10 s), Stop & keep, 4 h pojistka, ticho u přehrávání
+ running ─ Watchdog.Tick()        ← no data → reopen with a growing pause; dead microphone → yellow icon
+   │       Watchdog.FollowCallMic()← the call app switched headsets → switch the microphone track
+   │       end: the app releases the microphone (10 s), Stop & keep, 4 h safety stop, silence in playback
    ▼
- stop ─── RecordingInfo zachycené v okamžiku stopu (název, kalendář, viděná okna, continues, call_app)
-   │      bez jediného WAV → složka pryč, hlášení „nevznikla“
+ stop ─── RecordingInfo taken at the moment of the stop (title, calendar, windows seen, continues, call_app)
+   │      not a single WAV → the folder goes, "nevznikla" (not made) message
    ▼
- Finalizer (na pozadí) ── mix 16 kHz (ffmpeg) → přepárování kalendáře podle okna → přejmenování složky
-                          → sidecar .json (zapisuje se poslední = nahrávka je hotová)
+ Finalizer (background) ── 16 kHz mix (ffmpeg) → calendar re-matched by the window → folder renamed
+                           → sidecar .json (written last = the recording is complete)
 ```
 
-## Klíčová rozhodnutí
+## Key decisions
 
-**Sdílená rozhraní v `Core/Types.cs`.** Moduly se navzájem neznají víc, než je nutné: hlídač pracuje s `IAudioSource`,
-ne s konkrétním nahrávačem; čas jde přes `IClock`, oznámení přes `INotifier`. Díky tomu se hlídač, výběr mikrofonu,
-detekce hovoru nebo výběr schůzky dají testovat bez zvukové karty, Teams i Outlooku - stejné scénáře jako
-`legacy/smoke_test.py`, jen v xUnit.
+**Shared interfaces in `Core/Types.cs`.** Modules know no more of each other than needed: the watchdog works with
+`IAudioSource`, not with a concrete recorder; time comes through `IClock`, notifications through `INotifier`. So the
+watchdog, the choice of microphone, call detection or meeting matching can be tested without a sound card, Teams or
+Outlook - the same scenarios as `legacy/smoke_test.py`, only in xUnit.
 
-**Metadata nahrávky se berou v okamžiku stopu (`RecordingInfo`).** Při přechodu schůzky na místě do hovoru v Teams
-začíná další nahrávka hned, zatímco se ta předchozí ještě dokončuje. Kdyby dokončení četlo aktuální stav aplikace,
-dostala by první nahrávka název té druhé (chyba, kterou jsme v prototypu opravili).
+**A recording's metadata is taken at the moment of the stop (`RecordingInfo`).** When an on-site meeting turns into a
+Teams call, the next recording starts at once while the previous one is still being finished. If finishing read the
+app's current state, the first recording would get the second one's title (a bug we fixed in the prototype).
 
-**Mikrofon podle aplikace hovoru, ne podle Windows.** Teams, Zoom i prohlížeč si mikrofon vybírají samy; výchozí vstup
-Windows může být úplně jiné zařízení (29. 9. se nahrával dongle BT-W5, zatímco Teams používal sluchátka Sony, a
-uživatel v nahrávce chyběl celý). `Devices.CallInputDevice()` čte relace Core Audio a vybírá mikrofon procesu hovoru
-(Teams → známé hovorové aplikace → cokoli kromě nás).
+**The microphone by the call app, not by Windows.** Teams, Zoom and the browser choose their microphone themselves;
+Windows' default input can be a completely different device (on 29 Sep the BT-W5 dongle was recorded while Teams used
+the Sony headset, and the user was missing from the recording entirely). `Devices.CallInputDevice()` reads the Core
+Audio sessions and picks the microphone of the call's process (Teams → known call apps → anything but us).
 
-**Hovor = kdo drží mikrofon (registr ConsentStore).** Spolehlivé i při ztlumení v aplikaci; předvstupní obrazovka Teams
-se ale také drží mikrofonu, proto se nahrává až po připojení (okno schůzky). Prohlížeč se počítá jen s otevřenou
-schůzkou v názvu okna, jinak by se nahrával diktát nebo hlasové vyhledávání.
+**A call = who holds the microphone (ConsentStore registry).** Reliable even when muted in the app; but the Teams join
+screen holds the microphone too, so recording starts only after joining (the meeting window). A browser counts only
+with a meeting open in the window title, otherwise dictation or voice search would be recorded. The app's own entry
+(`teamsrec-capture.exe`) never counts as Teams.
 
-**Hlídač s rostoucí pauzou.** Když zvuk přestane chodit (uspaná Bluetooth sluchátka), znovuotevření streamů se
-vyhodnotí po 12 s a další pokus čeká 0/30/60/180/300 s (nejvýš 8×). Bez toho prototyp jednou za 6 minut vyvolal
-13 hlášení o změně zařízení. Mikrofon bez jakéhokoli šumu místnosti 2 minuty znamená, že se nahrává z nepoužívaného
-zařízení - ikona zežloutne a hlášení se opakuje po 5 minutách.
+**A watchdog with a growing pause.** When the audio stops coming (a Bluetooth headset gone to sleep), the reopened
+streams are judged after 12 s and the next attempt waits 0/30/60/180/300 s (at most 8×). Without it the prototype once
+raised 13 device-change messages in 6 minutes. A microphone without any room noise for 2 minutes means an unused device
+is being recorded - the icon turns yellow and the message repeats after 5 minutes.
 
-**Snímání oken v samostatném procesu.** Stejně jako prototyp: aplikace spustí sama sebe jako
-`teamsrec-capture.exe --screen-capture <stem> <start>`. Zaseknuté `PrintWindow` nebo pád GDI či enkodéru tak zůstane
-v tom procesu a nahrávání zvuku neshodí. Proces snímá, dokud mu aplikace nezavře stdin (nebo dokud aplikace
-neskončí), a pak zapíše `<stem>_screens.json`. Když do 45 s neskončí, aplikace ho ukončí; videa na disku se
-použijí i bez jeho hlášení (`recovered`). Každé okno Teams má vlastní proces ffmpeg, do kterého jdou snímky
-1600×900 (poměr stran zachován, okraje černé).
+**Window capture in a separate process.** As in the prototype: the app starts itself as
+`teamsrec-capture.exe --screen-capture <stem> <start>`. A hung `PrintWindow` or a crash in GDI or the encoder stays in
+that process and cannot bring the audio recording down. The process captures until the app closes its stdin (or the app
+ends) and then writes `<stem>_screens.json`. If it does not end within 45 s, the app stops it; the videos on disk are
+used even without its report (`recovered`). Each Teams window has its own ffmpeg process that receives 1600×900 frames
+(aspect ratio kept, black borders).
 
-**Zastavení mimo zámek.** Stav nahrávky se převezme pod zámkem, zavírání streamů a videí (i desítky sekund)
-proběhne mimo něj, takže ikona v liště nikdy nečeká. Stejně tak dotaz do Outlooku při startu běží až po spuštění
-nahrávání a mimo zámek.
+**Stopping outside the lock.** The recording's state is taken under the lock; closing the streams and videos (even tens
+of seconds) happens outside it, so the tray icon never waits. Likewise the Outlook query at the start runs only after
+recording has started, outside the lock.
 
-**Stránka nastavení přes `HttpListener`.** Stejný `settings.html` a stejné JSON API jako prototyp (jen 127.0.0.1,
-spouští se až kliknutím na Settings…). Konfigurace se zapisuje do sdíleného `teamsrec.toml` po řádcích, takže
-komentáře i klíče teamsrec-transcribe zůstanou.
+**One settings page for both apps.** The tray's Settings… opens the review page's Nastavení (teamsrec-transcribe,
+through `teamsrec-review.exe --settings`); the app's own page (`HttpListener` + `settings.html`, 127.0.0.1 only) is only
+the fallback without it. Configuration is written to the shared `teamsrec.toml` line by line, so comments and
+teamsrec-transcribe's keys stay; `ConfigWatcher` picks up changes made elsewhere without a restart.
 
-**Jedna instance, stejný mutex jako prototyp.** `Local\teamsrec-capture` - Python a .NET verze tak nikdy nenahrávají
-zároveň. Před spuštěním .NET verze je potřeba prototyp ukončit (Quit v liště) a hlídací úlohu přepnout na nový exe.
+**The review page knows what is being recorded.** On every change the app writes `%TEMP%\teamsrec-capture.json`
+(recording or not, title, start, pid); the review server shows a red dot and can stop its processing while a recording
+runs. A click on a balloon opens the review page (on the saved recording).
 
-## Co zůstává z Pythonu
+**One instance, the same mutex as the prototype.** `Local\teamsrec-capture` - the Python and .NET versions never record
+at the same time. Before starting the .NET version the prototype must be quit (Quit in the tray) and the watchdog task
+pointed at the new exe.
 
-Přepis, jména mluvčích, zápisy a kontrolní stránka zůstávají v teamsrec-transcribe (Python, WhisperX na GPU). .NET
-nahrávač s nimi mluví jen přes složku nahrávek a sidecar podle kontraktu - proto je kontrakt nejdůležitější
-společná část a oba projekty ho musí dodržet do písmene.
+## What stays in Python
 
-## Testy
+Transcription, speaker names, minutes and the review page stay in teamsrec-transcribe (Python, WhisperX on the GPU). The
+.NET recorder talks to them only through the recordings folder and the sidecar by the contract, plus the status file -
+which is why the contract is the most important shared part, and both projects must follow it to the letter.
 
-`dotnet test` spouští testy logiky: detekce předvstupní obrazovky a hovorů v jiných aplikacích, výběr mikrofonu
-hovoru, hlídač (pauzy, mrtvý mikrofon, přepnutí sluchátek), výběr schůzky z kalendáře, zápis TOML se zachováním
-komentářů, sidecar podle kontraktu, obnova WAV hlavičky po pádu. Skutečné nahrávání se ověřuje na hovoru.
+## Tests
+
+`dotnet test` runs the logic tests: detection of the join screen and of calls in other apps, the call's microphone, the
+watchdog (pauses, dead microphone, headset switch), meeting matching from the calendar, TOML writing with comments kept,
+the sidecar by the contract, recovering a WAV header after a crash, the review-page launch and status file. Real
+recording is checked on a call.

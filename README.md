@@ -13,7 +13,7 @@ the companion project [teamsrec-transcribe](https://github.com/drzdez/teamsrec-t
 What exists:
 
 - `dotnet/` — the .NET 10 port of the prototype (tray app, WASAPI via NAudio, xUnit tests). How it is built and why:
-  **[.NET návrh / design](docs/dotnet-design.md)**; build, run and status: [dotnet/README.md](dotnet/README.md);
+  **[.NET design](docs/dotnet-design.md)**; build, run and status: [dotnet/README.md](dotnet/README.md);
   what matches the prototype and what is still missing: [dotnet/PARITY.md](dotnet/PARITY.md).
 - `docs/recording-format.md` + `docs/recording.schema.json` — the contract both projects build on.
 - `docs/cross-platform-design.md` — **Linux, Mac a tablety (Android, iOS)**: what is tied to Windows, the proposed

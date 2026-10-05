@@ -216,22 +216,27 @@ user's own tile never gets the outline; the microphone track names the user. The
 ### Speaker sources and their priority
 
 The audio transcription is always the same. Only where "who speaks" comes from differs, by what the recording has, not
-by its extension:
+by its extension. The groups are the diarization's voice groups; the sources below only name them (the microphone also
+single replies), so a group never mixes voices – better more groups that the user merges than one group of several
+people (since 2026-10-05):
 
 1. Track `mic` (live recording) – the diarization label that coincides with microphone activity gets the user's name
    from the configuration (`[user] name`); also a single reply (≥ 1.5 s) with the microphone active ≥ 80 %, including one
    the diarization gave nobody. "Active" = at least 10 dB above the track's floor **and** at least −55 dBFS (a headset
    with a noise gate sends a −80…−90 dB residue while the others talk). Verified 2026-09-10: 89 % activity for the user,
    13–21 % for the others.
-2. `speakers_video.json` (a Teams recording with video, or the window videos) – a segment the highlight covers directly
-   (≥ 30 % of its length) gets that name, unless the microphone already named it (the microphone wins: Teams never
-   highlights the user's own tile). A whole diarization label is renamed only in a second round, and only when the
-   video gives one name at least 10 s, most of the covered time and at least a quarter of all the label said
-   (2026-09-16: a short highlight otherwise "owned" 47 minutes of someone else's speech). Names from a live window count
-   only when they match a participant.
-3. Diarization – always runs; it is the fallback for segments without overlap and for participants not in the video.
-   They stay `SPEAKER_XX` until the user names them in `speakers.json`.
-4. **Voice prints** (`_speakers/voiceprints.json`, since 2026-09-11, opt-in): the diarization returns an embedding per
+2. **Voice prints** (below) – a group recognised by voice gets the person.
+3. `speakers_video.json` (a Teams recording with video, or the window videos) – names **whole groups only**, and only
+   groups that neither the microphone nor a voice print named: when the video gives one name at least 10 s, most of
+   the covered time and at least a quarter of all the group said (2026-09-16: a short highlight otherwise "owned" 47
+   minutes of someone else's speech). A person the voice already found in another group gets no second group. Names
+   from a live window count only when they match a participant. Until 2026-10-05 the video also named single replies
+   by the highlighted tile; a live window keeps the previous speaker highlighted, so that made mixed groups ("Peter"
+   with replies of whoever was highlighted, next to the voice group that really was Peter) – no longer done.
+4. Diarization – always runs and makes the groups; the ones nobody named stay `SPEAKER_XX` until the user names them in
+   `speakers.json`. Two groups of one person are merged on the page by giving them the same name.
+
+**Voice prints** (`_speakers/voiceprints.json`, since 2026-09-11, opt-in): the diarization returns an embedding per
    label (pyannote community-1); the transcript stores it in `speaker_embeddings` (key = the resulting name/label, a unit
    vector). When a label gets a person **confirmed** (the page, `label-speakers`, the user's microphone track), the embedding is stored under the
    person (at most 10 per person, with the stem and label of origin; near duplicates ≥ 0.95 are dropped). In a new

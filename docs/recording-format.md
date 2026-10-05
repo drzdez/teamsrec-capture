@@ -23,6 +23,7 @@ Machine-readable form of the sidecar: [`recording.schema.json`](recording.schema
         <stem>.srt                           subtitles                             transcribe
         <stem>.summary.md                    minutes, summary, action items        transcribe
         <stem>.summary.<model>.md            minutes from another model            transcribe
+        <stem>.timings.json                  how long each part of the last jobs took  transcribe (derived)
 ```
 
 - Recordings are split into folders `<YYYY>/<MM>/<stem>/` by the local start time of the recording. Each recording

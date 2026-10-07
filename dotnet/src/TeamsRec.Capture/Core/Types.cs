@@ -25,6 +25,10 @@ public interface INotifier
     /// <summary>A message about one recording: the tray opens that recording on the review page when the balloon is
     /// clicked. Without a tray (tests) it is a plain message.</summary>
     void NotifyRecording(string message, string stem) => Notify(message);
+
+    /// <summary>A discreet mark on the tray icon (no balloon, no text on screen – the user may be presenting);
+    /// the reason shows only in the tooltip. One mark per key; null removes it.</summary>
+    void Mark(string key, string? reason) { }
     void Beep(bool error = false);
 }
 

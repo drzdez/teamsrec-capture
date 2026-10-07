@@ -167,6 +167,26 @@ internal static class AppLogic
     /// not a call in another app (as the prototype).</summary>
     public static bool RecordsWindows(bool onsite, CallApp? callApp) => !onsite && callApp is null;
 
+    public const int HiddenWarnS = 20;  // the meeting window hidden this long: tell the user once (until it is back)
+
+    /// <summary>A warning on screen with text only when the user surely does not present: no Teams sharing
+    /// toolbar and Windows accepts notifications (not full screen, presentation mode, focus). Otherwise a mark.</summary>
+    public static bool Discreet(bool presenting, bool acceptsNotifications) => presenting || !acceptsNotifications;
+
+    /// <summary>The short form for the tray tooltip (it holds 127 characters).</summary>
+    public static string CalendarMark(string warning) =>
+        warning.StartsWith("Kalendář Outlook") ? "kalendář nedostupný"
+        : warning.StartsWith("V kalendáři není") ? "schůzka v kalendáři nenalezena" : "víc schůzek v kalendáři";
+
+    /// <summary>What to say about the calendar of a new recording ("" = nothing).</summary>
+    public static string CalendarWarning(string problem, CalendarItem? cal) => problem switch
+    {
+        "unavailable" => "Kalendář Outlook není dostupný – schůzku k nahrávce nepřiřadím (účastníci jen z videa).",
+        "none" => "V kalendáři není schůzka k tomuto hovoru – účastníci se doplní jen z videa.",
+        "ambiguous" => $"V kalendáři je v tu dobu víc schůzek, vybrána {cal?.Subject} – zkontrolujte ji na stránce přepisu.",
+        _ => "",
+    };
+
     /// <summary>Microphone of a new recording: on-site = the chosen / configured room mic, playback = none,
     /// a call = the one the call app records from (whatever the Windows default input is), else the default.</summary>
     public static string MicFor(bool onsite, bool playback, string? mic, string onsiteMic, Func<string?> callInputDevice) =>
@@ -205,6 +225,8 @@ public sealed class MonitorLoop : IDisposable
     // -- state between recordings
     private volatile bool _declined;      // discarded on purpose / start failed: not again until the call is over
     private double? _prejoinSince;        // Teams sits on the join screen: the call has not started yet
+    private double? _hiddenSince;         // the Teams meeting window cannot be seen (minimized / only compact view)
+    private bool _hiddenWarned;
     private readonly HashSet<string> _offered = [];  // calendar meetings already offered, so they are offered once
     private double _offerCheckedAt;
 
@@ -328,6 +350,8 @@ public sealed class MonitorLoop : IDisposable
             _notifier.Notify("No audio is arriving from the default devices. Headset off?");
         }
         _watchdog.Tick(rec, elapsed, _playback);
+        if (!_playback && AppLogic.RecordsWindows(_onsite, _callApp))
+            WatchTeamsWindow();
         // during a call, follow a headset switch; on-site and playback record what they were told to
         _watchdog.FollowCallMic(rec, () => Devices.CallInputDevice(), applies: !_playback && !_onsite);
 
@@ -350,6 +374,42 @@ public sealed class MonitorLoop : IDisposable
                 Stop("call ended");
         }
         Refresh();
+    }
+
+    /// <summary>The screen capture names the speakers from the Teams window: when the meeting window is
+    /// minimized (or only the compact view is left) for HiddenWarnS, tell the user once – as text when they do not
+    /// present, otherwise only a mark on the tray icon. The mark goes when the window is back.</summary>
+    private void WatchTeamsWindow()
+    {
+        var windows = WindowTitles.TeamsStates();
+        if (windows.Count == 0 || CallDetector.MeetingViewVisible(windows))
+        {
+            if (_hiddenSince is not null)
+            {
+                _hiddenSince = null;
+                _hiddenWarned = false;
+                _notifier.Mark("teams-window", null);
+                Log.Info("the Teams meeting window is visible again");
+            }
+            return;
+        }
+        _hiddenSince ??= _clock.Seconds;
+        if (_hiddenWarned || _clock.Seconds - _hiddenSince.Value < AppLogic.HiddenWarnS)
+            return;
+        _hiddenWarned = true;
+        Log.Info("the Teams meeting window is minimized or hidden: the screen capture cannot see the participants");
+        Warn("teams-window", "okno Teams skryté, nevidím účastníky", "Okno schůzky Teams je minimalizované – nahrávka nevidí účastníky (jména z videa). "
+             + "Obnovte okno; může být i za ostatními okny.",
+             CallDetector.Presenting(windows.Select(w => w.Title)));
+    }
+
+    /// <summary>A warning: always a mark on the tray icon (tooltip), plus the text when the user surely does not
+    /// present (AppLogic.Discreet).</summary>
+    private void Warn(string key, string mark, string text, bool presenting = false)
+    {
+        _notifier.Mark(key, mark);
+        if (!AppLogic.Discreet(presenting || CallDetector.Presenting(TeamsTitles()), Presence.AcceptsNotifications()))
+            _notifier.Notify(text);
     }
 
     private void TickIdle(bool inCall)
@@ -605,6 +665,8 @@ public sealed class MonitorLoop : IDisposable
             _callMissingSince = null;
             _noAudioWarned = false;
             _prejoinSince = null;
+            _hiddenSince = null;
+            _hiddenWarned = false;
             _continues = null;
             _callApp = callApp;
             _watchdog.Reset();
@@ -631,9 +693,10 @@ public sealed class MonitorLoop : IDisposable
                     Log.Warn("screen capture needs ffmpeg (not found), recording audio only");
             }
         }
+        var calendarWarning = "";
         if (!playback)
         {
-            var cal = Outlook.Meeting(_cfg.UseOutlook, _clock.Now, title);
+            var (cal, problem) = Outlook.Lookup(_cfg.UseOutlook, _clock.Now, title);
             lock (_lock)
             {
                 if (ReferenceEquals(_rec, started))  // not stopped meanwhile
@@ -642,9 +705,13 @@ public sealed class MonitorLoop : IDisposable
                     (_title, _titleSource) = AppLogic.ResolveTitle(title, manual, cal);
                 }
             }
+            if (!manual)
+                calendarWarning = AppLogic.CalendarWarning(problem, cal);
         }
         Refresh();
         Log.Info($"START '{title}' ({(playback ? "playback" : manual ? "manual" : "live")}) -> {stemPath}");
+        if (calendarWarning.Length > 0)
+            Warn("calendar", AppLogic.CalendarMark(calendarWarning), calendarWarning);
         return started;
     }
 
@@ -672,6 +739,8 @@ public sealed class MonitorLoop : IDisposable
             info = new RecordingInfo(_title, _calendar, _titleSource, new HashSet<string>(_titlesSeen), _continues,
                                      AppLogic.SourceOf(_onsite, _playback, _manual), _callApp?.App);
         }
+        _notifier.Mark("teams-window", null);
+        _notifier.Mark("calendar", null);
         Refresh();  // the tray is idle at once; closing the streams and the videos takes seconds, outside the lock
         var dur = rec.Stop();
         IReadOnlyList<ScreenInfo> screens = [];

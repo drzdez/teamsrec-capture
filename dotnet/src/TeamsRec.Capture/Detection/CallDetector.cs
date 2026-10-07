@@ -89,6 +89,22 @@ public static class CallDetector
         return t.Length == 0 || TeamsGeneric.Contains(t) || TeamsNav.Contains(t) || t.StartsWith("meeting compact", StringComparison.Ordinal);
     }
 
+    /// <summary>Teams' sharing toolbar is up: the user presents (Teams also shrinks the meeting window then).</summary>
+    public static readonly IReadOnlySet<string> TeamsSharing = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "ovládací panel sdílení", "sharing control bar", "screen sharing toolbar", "sdílení obsahu",
+    };
+
+    public static bool Presenting(IEnumerable<string> titles) =>
+        titles.Any(t => TitleParts(t) is { Length: >= 2 } p && Lower(p[^1]) == TeamsSuffix && TeamsSharing.Contains(Lower(p[0])));
+
+    /// <summary>Can the screen capture see the participants? A meeting window ("&lt;subject&gt; | Microsoft Teams",
+    /// not the compact view or the sharing toolbar) that is not minimized and big enough (the capture's own size
+    /// rule). Covered by other windows is fine: the capture reads the window itself.</summary>
+    public static bool MeetingViewVisible(IEnumerable<TeamsWindow> windows, int minW = 500, int minH = 350) =>
+        windows.Any(w => IsMeetingWindow(w.Title) && !IsGenericTitle(TitleParts(w.Title)[0]) && !w.Minimized
+                         && w.Width >= minW && w.Height >= minH);
+
     /// <summary>The join dialog, which exists only before the call is joined.</summary>
     public static bool IsPrejoinTitle(string title)
     {

@@ -157,6 +157,19 @@ folder is left behind (0.7.1; before that the app happily “recorded” nothing
 missing, the tray icon turns yellow, the status line says so and the warning repeats every 5 minutes — a single
 notification is easy to miss in a meeting.
 
+Other warnings during a call: the calendar meeting could not be found (Outlook unavailable, no meeting at that time,
+or several at once – the review page then offers them), and the Teams meeting window has been minimized for 20 s (only
+the compact view or the sharing toolbar is left), so the window video cannot see who speaks. Each shows as a text
+notification only when you surely do not present – no Teams sharing toolbar, and Windows accepts notifications (not
+full screen, presentation mode or focus); otherwise only a white "!" appears in the tray dot, with the reason in its
+tooltip. The mark goes when the window is back or the recording ends. While the review page processes recordings, the
+idle dot is yellow (tooltip: what runs, how many wait) and a notification says when each recording is done – a click
+opens it; the review window can be closed meanwhile.
+
+The Outlook filter date is asked in both day/month orders and only items starting on that day are kept: Outlook reads
+it by the regional settings, so `10/07/2026` was 10 July in Czech and no meeting was found on days 1–12 of a month
+(fixed 2026-10-07, both apps).
+
 ## Planned stack
 
 - .NET 8, WPF (prompt window + tray icon), NAudio (`WasapiLoopbackCapture`, `WasapiCapture`), mixing in-process

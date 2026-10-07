@@ -7,7 +7,8 @@ using TeamsRec.Capture.Settings;
 
 namespace TeamsRec.Capture.App;
 
-/// <summary>The tray icon: grey idle / red recording / yellow when the watchdog says no audio arrives, the
+/// <summary>The tray icon: grey idle / red recording / yellow when the watchdog says no audio arrives, or while
+/// idle when the review server processes recordings (with a balloon when one is done), the
 /// status as tooltip, and the prototype's menu. It is also the INotifier: balloon tips + Windows sounds.
 /// All UI work is marshalled to the UI thread; the monitor loop and the finalizer call in from others.</summary>
 public sealed class TrayApp : ApplicationContext, INotifier
@@ -15,6 +16,10 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private static readonly Icon IconIdle = RoundIcon(Color.FromArgb(0x7f, 0x8c, 0x8d));
     private static readonly Icon IconRec = RoundIcon(Color.FromArgb(0xe7, 0x4c, 0x3c));
     private static readonly Icon IconWarn = RoundIcon(Color.FromArgb(0xf1, 0xc4, 0x0f));
+    // the same with a small white "!" mark: something to check, said without text on screen (Mark)
+    private static readonly Icon IconRecMarked = RoundIcon(Color.FromArgb(0xe7, 0x4c, 0x3c), marked: true);
+    private static readonly Icon IconWarnMarked = RoundIcon(Color.FromArgb(0xf1, 0xc4, 0x0f), marked: true);
+    private static readonly Icon IconIdleMarked = RoundIcon(Color.FromArgb(0x7f, 0x8c, 0x8d), marked: true);
 
     private readonly AppConfig _cfg;
     private readonly Control _ui;             // owns the UI thread's handle, for BeginInvoke from other threads
@@ -28,6 +33,10 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private Release? _balloonUpdate;  // the balloon on screen offers this release (a click installs it)
     private Release? _offerAfterRecording;  // found during a recording: offered when it ends
     private string? _balloonStem;  // the recording the balloon on screen is about (UI thread only)
+    private readonly System.Windows.Forms.Timer _reviewPoll = new() { Interval = 3000 };
+    private ReviewJobsState? _review;  // what the review server does (ReviewJobs), UI thread only
+    private HashSet<string>? _reviewSeen;  // its ended jobs already announced
+    private readonly Dictionary<string, string> _marks = new();  // discreet warnings (Mark), UI thread only
     private readonly ToolStripMenuItem _status, _manual, _onsite, _playback, _test, _stopKeep, _abort, _update;
 
     public TrayApp(AppConfig cfg, IClock clock)
@@ -88,6 +97,9 @@ public sealed class TrayApp : ApplicationContext, INotifier
                 OpenReview(stem: _balloonStem);
         };
         _updater = new Updater(cfg, rel => OnUi(() => OnUpdateFound(rel)));
+        _reviewPoll.Tick += (_, _) => PollReview();
+        _reviewPoll.Start();
+        PollReview();
         _loop.Run();
     }
 
@@ -111,6 +123,16 @@ public sealed class TrayApp : ApplicationContext, INotifier
             _balloonStem = stem;
             _balloonUpdate = null;
             _icon.ShowBalloonTip(8000, "teamsrec – kliknutím otevřete", message, ToolTipIcon.None);
+        });
+    }
+
+    public void Mark(string key, string? reason)
+    {
+        OnUi(() =>
+        {
+            if (reason is null) _marks.Remove(key);
+            else _marks[key] = reason;
+            RefreshIcon();
         });
     }
 
@@ -150,8 +172,52 @@ public sealed class TrayApp : ApplicationContext, INotifier
             _offerAfterRecording = null;
             ShowUpdateBalloon(offer);
         }
-        _icon.Icon = rec ? (string.IsNullOrEmpty(_loop.AudioWarned) ? IconRec : IconWarn) : IconIdle;
-        _icon.Text = AppLogic.Tooltip(_loop.Status());
+        bool processing = !rec && _review is { Busy: true };
+        bool marked = _marks.Count > 0;
+        bool yellow = rec ? !string.IsNullOrEmpty(_loop.AudioWarned) : processing;
+        _icon.Icon = (rec && !yellow) ? (marked ? IconRecMarked : IconRec)
+                   : yellow ? (marked ? IconWarnMarked : IconWarn)
+                   : (marked ? IconIdleMarked : IconIdle);
+        var text = processing ? ReviewJobs.Tooltip(_review!) : _loop.Status();
+        if (marked) text = "⚠ " + string.Join(" · ", _marks.Values) + "\n" + text;
+        _icon.Text = AppLogic.Tooltip(text);
+    }
+
+    /// <summary>Every 3 s (UI thread): the review server's jobs – yellow while it processes, a balloon for each
+    /// recording it finished (a click opens it). Never during a recording: the balloon waits for its end.</summary>
+    private void PollReview()
+    {
+        try
+        {
+            var state = ReviewJobs.Read();
+            bool changed = (state?.Busy ?? false) != (_review?.Busy ?? false) || state?.Title != _review?.Title
+                           || state?.Queued != _review?.Queued;
+            if (state is not null)
+            {
+                if (_loop.Recording && _reviewSeen is not null)
+                {
+                    // announced after the recording: keep them unseen
+                }
+                else
+                {
+                    var done = ReviewJobs.NewlyFinished(state, ref _reviewSeen);
+                    if (done.Count > 0)
+                    {
+                        var last = done[^1];
+                        var msg = done.Count == 1 ? ReviewJobs.Balloon(last)
+                            : ReviewJobs.Balloon(last) + $" (a {done.Count - 1} další)";
+                        if (last.Stem.Length > 0) NotifyRecording(msg, last.Stem);
+                        else Notify(msg);
+                    }
+                }
+            }
+            _review = state;
+            if (changed) RefreshIcon();
+        }
+        catch (Exception e)
+        {
+            FileLog.Exception("review jobs", e);
+        }
     }
 
     /// <summary>The same enabled rules as the prototype: starting only while idle, stopping only while recording.</summary>
@@ -315,6 +381,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         if (_quitting)
             return;
         _quitting = true;
+        _reviewPoll.Stop();
         _icon.Visible = false;
         // stopping may take a moment (streams, screen encoders): off the UI thread, then leave the message loop
         Task.Run(() =>
@@ -330,7 +397,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
 
     // ------------------------------------------------------------------ icons
     /// <summary>A filled circle like the prototype's 64 px PIL image (ellipse 8..56).</summary>
-    internal static Icon RoundIcon(Color color)
+    internal static Icon RoundIcon(Color color, bool marked = false)
     {
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
@@ -339,6 +406,12 @@ public sealed class TrayApp : ApplicationContext, INotifier
             g.Clear(Color.Transparent);
             using var brush = new SolidBrush(color);
             g.FillEllipse(brush, 4, 4, 24, 24);
+            if (marked)  // a white "!" in the dot, readable at 16 px
+            {
+                using var white = new SolidBrush(Color.White);
+                g.FillRectangle(white, 14, 8, 4, 11);
+                g.FillEllipse(white, 14, 21, 4, 4);
+            }
         }
         // three icons for the process lifetime: the HICON is intentionally never destroyed
         return Icon.FromHandle(bmp.GetHicon());

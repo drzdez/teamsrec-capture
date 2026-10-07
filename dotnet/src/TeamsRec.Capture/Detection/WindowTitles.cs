@@ -4,6 +4,9 @@ using System.Text;
 
 namespace TeamsRec.Capture.Detection;
 
+/// <summary>A Teams window: its title, whether it is minimized, its size.</summary>
+public sealed record TeamsWindow(string Title, bool Minimized, int Width, int Height);
+
 /// <summary>Titles of visible top-level windows per process (EnumWindows), used to tell a meeting from a join screen.</summary>
 public static class WindowTitles
 {
@@ -25,6 +28,27 @@ public static class WindowTitles
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
+
+    /// <summary>Every visible Teams window with its state: minimized, size (the screen capture sees a window that
+    /// is covered by others, not one that is minimized or tiny).</summary>
+    public static List<TeamsWindow> TeamsStates() =>
+        Teams().Select(w =>
+        {
+            var min = IsIconic(w.Hwnd);
+            var ok = GetWindowRect(w.Hwnd, out var r);
+            return new TeamsWindow(w.Title, min, ok ? r.Right - r.Left : 0, ok ? r.Bottom - r.Top : 0);
+        }).ToList();
 
     /// <summary>(hwnd, title) of every visible top-level Teams window.</summary>
     public static List<(IntPtr Hwnd, string Title)> Teams() => Windows(CallDetector.TeamsExe);

@@ -179,6 +179,9 @@ public static class Outlook
         return (besti, bestj, bestsize);
     }
 
+    /// <summary>Month/day and day/month: Outlook reads the filter date by the regional settings (see Items).</summary>
+    internal static readonly string[] DateOrders = { "MM/dd/yyyy", "dd/MM/yyyy" };
+
     /// <summary>Calendar items of one day from the classic Outlook on this machine (COM late binding; throws
     /// when Outlook is not installed / has no COM / no profile - Meeting() turns that into null).</summary>
     public static List<CalendarItem> Items(DateTime day)
@@ -198,27 +201,45 @@ public static class Outlook
             // occurrences of a recurring meeting (the daily standup) are missing.
             all.IncludeRecurrences = true;
             all.Sort("[Start]");
-            var d = day.ToString("MM/dd/yyyy", CultureInfo.InvariantCulture);
-            restricted = all.Restrict($"[Start] >= '{d} 00:00' AND [Start] <= '{d} 23:59'");
-            // GetFirst/GetNext instead of Count/foreach: with IncludeRecurrences the Count is meaningless.
-            object? cur = restricted.GetFirst();
-            while (cur is not null)
+            // Restrict parses the date by the Windows regional settings: "10/07/2026" is 7 Oct in the US but
+            // 10 July in Czech (2026-10-07: no meeting was found on days 1-12 of any month). Ask with both orders
+            // and keep the items that really start on that day.
+            var seen = new HashSet<(string, DateTime, DateTime)>();
+            foreach (var fmt in DateOrders)
             {
+                var d = day.ToString(fmt, CultureInfo.InvariantCulture);
                 try
                 {
-                    var item = FromCom(cur);
-                    if (item is not null) out_.Add(item);
+                    restricted = all.Restrict($"[Start] >= '{d} 00:00' AND [Start] <= '{d} 23:59'");
                 }
                 catch (Exception)
                 {
-                    // one broken item (no access, odd type) must not cost the whole calendar
+                    continue;  // a date this locale cannot read (day 13+ as a month)
                 }
-                finally
+                // GetFirst/GetNext instead of Count/foreach: with IncludeRecurrences the Count is meaningless.
+                object? cur = restricted.GetFirst();
+                while (cur is not null)
                 {
-                    Release(cur);
+                    try
+                    {
+                        var item = FromCom(cur);
+                        if (item is not null && item.Start.Date == day.Date && seen.Add((item.Subject, item.Start, item.End)))
+                            out_.Add(item);
+                    }
+                    catch (Exception)
+                    {
+                        // one broken item (no access, odd type) must not cost the whole calendar
+                    }
+                    finally
+                    {
+                        Release(cur);
+                    }
+                    cur = restricted.GetNext();
                 }
-                cur = restricted.GetNext();
+                Release((object?)restricted);
+                restricted = null;
             }
+            out_.Sort((a, b) => a.Start.CompareTo(b.Start));
             return out_;
         }
         finally
@@ -279,6 +300,36 @@ public static class Outlook
         {
             // releasing is housekeeping only
         }
+    }
+
+    /// <summary>Like Meeting, with why there is no clear meeting: "" (found by title, or the only one at that time),
+    /// "off" (calendar disabled), "unavailable" (Outlook / COM), "none" (no meeting near the call), "ambiguous"
+    /// (picked by time while two or more meetings run then – the review page lets the user choose).</summary>
+    public static (CalendarItem? Item, string Problem) Lookup(bool enabled, DateTime? at = null, string? title = null,
+                                                              Func<DateTime, List<CalendarItem>>? items = null)
+    {
+        if (!enabled) return (null, "off");
+        var when = at ?? DateTime.Now;
+        List<CalendarItem> list;
+        try
+        {
+            list = (items ?? Items)(when);
+        }
+        catch (Exception e)  // Outlook not running / new Outlook without COM / no profile
+        {
+            var msg = e.Message;
+            Log.Info($"outlook calendar not available: {(msg.Length > 120 ? msg[..120] : msg)}");
+            return (null, "unavailable");
+        }
+        var (it, match) = Pick(list, when, title);
+        if (it is null)
+        {
+            Log.Info($"calendar: no meeting near {when:HH:mm} ({list.Count} items that day)");
+            return (null, "none");
+        }
+        var running = list.Count(c => c.Start - TimeSpan.FromSeconds(BeforeS) <= when && when <= c.End);
+        var problem = match == "time" && running >= 2 ? "ambiguous" : "";
+        return (it with { Match = match, Candidates = CandidatesAt(list, when) }, problem);
     }
 
     /// <summary>The meeting from Outlook for the call starting now, with Match set ("title"/"time"). Null when

@@ -65,6 +65,10 @@ public sealed class TrayApp : ApplicationContext, INotifier
             ToolTipText = "stránka kontroly přepisů, zápisů a nastavení (poklepání na ikonu)",
         };
         var settings = new ToolStripMenuItem("Settings…", null, (_, _) => OpenReview(settings: true));
+        var wizard = new ToolStripMenuItem("Setup wizard…", null, (_, _) => OpenReview(wizard: true))
+        {
+            ToolTipText = "krok za krokem: složka, přepis, rozlišení mluvčích, zápisy",
+        };
         var folder = new ToolStripMenuItem("Open folder", null, (_, _) => OpenFolder());
         _update = new ToolStripMenuItem("", null, (_, _) => { if (_updater?.Available is { } r) InstallUpdate(r); })
         {
@@ -76,7 +80,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
 
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(new ToolStripItem[] { _status, new ToolStripSeparator(), review, new ToolStripSeparator(),
-                             _manual, _onsite, _playback, _stopKeep, _abort, _test, settings, folder,
+                             _manual, _onsite, _playback, _stopKeep, _abort, _test, settings, wizard, folder,
                              new ToolStripSeparator(), _update, checkUpdate, quit });
         menu.Opening += (_, _) => UpdateMenu();
 
@@ -251,11 +255,11 @@ public sealed class TrayApp : ApplicationContext, INotifier
     }
 
     /// <summary>The review page (teamsrec-transcribe) in its desktop window or in the browser, as tray_open says.</summary>
-    private void OpenReview(bool settings = false, string? stem = null)
+    private void OpenReview(bool settings = false, string? stem = null, bool wizard = false)
     {
         var (exe, args) = AppLogic.ReviewLaunch(_cfg.TrayOpen, _cfg.ReviewApp,
                                                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                                settings, stem);
+                                                settings, stem, AppContext.BaseDirectory, wizard);
         if (!File.Exists(exe))
         {
             if (settings)

@@ -42,7 +42,21 @@ public class ConfigWatcherTests
         Assert.Equal((app, "--browser"), App.AppLogic.ReviewLaunch("web", "", local));
         Assert.Equal((app, "--settings"), App.AppLogic.ReviewLaunch("app", "", local, settings: true));
         Assert.Equal((app, "--browser --settings"), App.AppLogic.ReviewLaunch("web", "", local, settings: true));
+        Assert.Equal((app, "--wizard"), App.AppLogic.ReviewLaunch("app", "", local, wizard: true));
         Assert.Equal((app, "--open 2026-09-30_1827_zina"), App.AppLogic.ReviewLaunch("app", "", local, stem: "2026-09-30_1827_zina"));
+        // the suite MSI installs the window next to this app: that one wins over the earlier separate install
+        var suiteDir = Path.Combine(Path.GetTempPath(), $"teamsrec-suite-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(suiteDir);
+        try
+        {
+            Assert.Equal((app, ""), App.AppLogic.ReviewLaunch("app", "", local, appDir: suiteDir));  // not there
+            File.WriteAllText(Path.Combine(suiteDir, "teamsrec-review.exe"), "");
+            Assert.Equal(Path.Combine(suiteDir, "teamsrec-review.exe"), App.AppLogic.ReviewLaunch("app", "", local, appDir: suiteDir).Exe);
+        }
+        finally
+        {
+            Directory.Delete(suiteDir, true);
+        }
         Assert.Equal((app, "--browser --open 2026-09-30_1827_zina"),
                      App.AppLogic.ReviewLaunch("web", "", local, stem: "2026-09-30_1827_zina"));
         Assert.Equal((app, ""), App.AppLogic.ReviewLaunch("app", "", local, stem: "x\" & calc"));  // no command-line tricks

@@ -135,11 +135,16 @@ internal static class AppLogic
 
     /// <summary>How the tray opens the review page: (exe, arguments). tray_open = web -> "--browser" (the page in
     /// the default browser), anything else -> the desktop window; settings -> "--settings" (its Nastavení, the one
-    /// settings page of both apps). The exe is review_app, or the usual install place under localAppData.</summary>
+    /// settings page of both apps). The exe is review_app, else the one installed next to this app (the suite MSI),
+    /// else the earlier separate install place under localAppData.</summary>
     public static (string Exe, string Args) ReviewLaunch(string trayOpen, string reviewApp, string localAppData,
-                                                          bool settings = false, string? stem = null) =>
-        (reviewApp.Length > 0 ? reviewApp : Path.Combine(localAppData, "Programs", "teamsrec-review", "teamsrec-review.exe"),
+                                                          bool settings = false, string? stem = null,
+                                                          string? appDir = null, bool wizard = false) =>
+        (reviewApp.Length > 0 ? reviewApp
+         : appDir is not null && File.Exists(Path.Combine(appDir, "teamsrec-review.exe")) ? Path.Combine(appDir, "teamsrec-review.exe")
+         : Path.Combine(localAppData, "Programs", "teamsrec-review", "teamsrec-review.exe"),
          string.Join(" ", new[] { trayOpen == "web" ? "--browser" : "", settings ? "--settings" : "",
+                                  wizard ? "--wizard" : "",
                                   IsStem(stem) ? $"--open {stem}" : "" }.Where(a => a.Length > 0)));
 
     /// <summary>%TEMP%\teamsrec-capture.json: what the capture app is doing, for the review page (red dot while a

@@ -6,6 +6,8 @@
     <Platform>x64</Platform>
     <InstallerPlatform>x64</InstallerPlatform>
     <DefineConstants>ProductVersion=$(ProductVersion);PublishDir=$(PublishDir)</DefineConstants>
+    <!-- the whole suite (stage-suite.ps1): the review window, uv and the transcription project next to the app -->
+    <DefineConstants Condition="'$(SuiteDir)' != ''">$(DefineConstants);SuiteDir=$(SuiteDir)</DefineConstants>
     <!-- per-user components keep their files under %LOCALAPPDATA%: the per-machine ICE rules do not apply -->
     <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
     <!-- the quit command is a Property on purpose (see Package.wxs): its [references] are formatted at run time -->

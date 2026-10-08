@@ -1,7 +1,8 @@
 # Builds the per-user MSI of teamsrec-capture: a self-contained single-file publish, then the WiX project.
 # Output: dotnet\installer\bin\x64\Release\en-US\teamsrec-capture-<version>-x64.msi (the path is printed).
 # The version is <Version> from the app's .csproj; the GitHub workflow runs the same script.
-param([string]$Configuration = "Release")
+# -Suite <folder from stage-suite.ps1>: the whole suite (review window, uv, the transcription project) in the MSI.
+param([string]$Configuration = "Release", [string]$Suite = "")
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -16,8 +17,9 @@ dotnet publish $proj -c $Configuration -r win-x64 --self-contained true -o $publ
     -p:DebugType=none
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
+$suiteArg = if ($Suite) { "-p:SuiteDir=$((Resolve-Path $Suite).Path)" } else { "-p:SuiteDir=" }
 dotnet build (Join-Path $PSScriptRoot "TeamsRec.Capture.Installer.wixproj") -c $Configuration `
-    -p:ProductVersion=$version -p:PublishDir=$publish
+    -p:ProductVersion=$version -p:PublishDir=$publish $suiteArg
 if ($LASTEXITCODE -ne 0) { throw "MSI build failed" }
 
 # localized builds (Strings.wxl) land in a culture subfolder

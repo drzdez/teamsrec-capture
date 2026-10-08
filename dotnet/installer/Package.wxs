@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  teamsrec-capture: per-user MSI, no admin rights. Installs into %LOCALAPPDATA%\Programs\teamsrec-capture (the same
+  teamsrec: per-user MSI, no admin rights. With SuiteDir (stage-suite.ps1) it is the whole suite: next to the recording
+  app the review window (teamsrec-review.exe), uv.exe and transcribe\ (the teamsrec-transcribe project); the window
+  builds the Python environment from them on its first start (%LOCALAPPDATA%\teamsrec\env, outside this folder, so an
+  update keeps it and the window only refreshes it). Without SuiteDir: the recording app alone, as before.
+
+  teamsrec-capture: installs into %LOCALAPPDATA%\Programs\teamsrec-capture (the same
   folder as the manual install before, so an upgrade replaces it in place), a Start menu shortcut and a Startup
   shortcut (autostart at login). A newer MSI upgrades an older one.
 
@@ -27,7 +32,10 @@
     <!-- a plain per-user package has no per-user Program Files: %LOCALAPPDATA%\Programs explicitly -->
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
-        <Directory Id="INSTALLFOLDER" Name="teamsrec-capture" />
+        <Directory Id="INSTALLFOLDER" Name="teamsrec-capture">
+          <Directory Id="TRANSCRIBEFOLDER" Name="transcribe" />
+          <Directory Id="FFMPEGFOLDER" Name="ffmpeg" />
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -60,6 +68,28 @@
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       </Component>
     </ComponentGroup>
+
+<?ifdef SuiteDir?>
+    <ComponentGroup Id="Suite" Directory="INSTALLFOLDER">
+      <Component Id="ReviewExe">
+        <File Id="ReviewExe" Source="$(SuiteDir)\teamsrec-review.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="UvExe">
+        <File Id="UvExe" Source="$(SuiteDir)\uv.exe" KeyPath="yes" />
+      </Component>
+      <Files Directory="TRANSCRIBEFOLDER" Include="$(SuiteDir)\transcribe\**" />
+      <Files Directory="FFMPEGFOLDER" Include="$(SuiteDir)\ffmpeg\**" />
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="ReviewShortcut">
+        <Shortcut Id="ReviewStartMenu" Name="teamsrec - prepisy" Description="Transcripts, speakers and minutes"
+                  Target="[INSTALLFOLDER]teamsrec-review.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\teamsrec\capture" Name="ReviewShortcut" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+<?endif?>
 
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
@@ -94,6 +124,10 @@
       <ComponentRef Id="RecordingsFolder" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="AutostartShortcut" />
+<?ifdef SuiteDir?>
+      <ComponentGroupRef Id="Suite" />
+      <ComponentRef Id="ReviewShortcut" />
+<?endif?>
     </Feature>
 
     <!-- Ask a running app to quit and wait for it (90 s: a finishing recording writes its mix first). Runs

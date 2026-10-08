@@ -8,6 +8,15 @@ Output is a folder of recordings described by a JSON sidecar — see
 [docs/recording-format.md](docs/recording-format.md). Transcription and summaries are done by
 the companion project [teamsrec-transcribe](https://github.com/drzdez/teamsrec-transcribe).
 
+## Install
+
+The MSI on [the releases page](https://github.com/drzdez/teamsrec-capture/releases/latest) is the **whole teamsrec
+suite** for Windows (from 1.1.0): this recording app, the review window and teamsrec-transcribe, uv and ffmpeg, per
+user and without admin rights. The window prepares the Python environment on its first start and then runs a setup
+wizard – see [teamsrec-transcribe/docs/install.md](https://github.com/drzdez/teamsrec-transcribe/blob/main/docs/install.md).
+How it is put together: `dotnet/installer/stage-suite.ps1` and `build-msi.ps1 -Suite`, run by the GitHub workflow on a
+tag (it builds the window from teamsrec-transcribe `main`).
+
 ## Status
 
 What exists:

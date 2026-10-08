@@ -31,6 +31,7 @@ public static class Mixer
         var envDir = Environment.GetEnvironmentVariable("TEAMSREC_FFMPEG_DIR");
         if (!string.IsNullOrEmpty(envDir))
             cands.Add(Path.Combine(envDir, "ffmpeg.exe"));
+        cands.Add(Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe"));  // the suite MSI brings its own
         var local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
         var packages = Path.Combine(local, "Microsoft", "WinGet", "Packages");
         try

@@ -1,5 +1,10 @@
-# Tests and the MSI on every push to main and every pull request; a tag v<version> also publishes a GitHub
-# Release with the MSI. The tag must match <Version> in dotnet/src/TeamsRec.Capture/TeamsRec.Capture.csproj.
+# Tests and the suite MSI on every push to main and every pull request; a tag v<version> also publishes a GitHub
+# Release with the MSI (the installed app finds it there and offers the update). The tag must match <Version> in
+# dotnet/src/TeamsRec.Capture/TeamsRec.Capture.csproj.
+#
+# The MSI is the whole suite: the recording app, the review window (built from teamsrec-transcribe/desktop), uv and
+# the teamsrec-transcribe project (dotnet/installer/stage-suite.ps1). It takes teamsrec-transcribe at
+# `transcribe_ref` (default main); the commit is in the release notes and in transcribe\suite.json.
 name: build
 
 on:
@@ -8,6 +13,10 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      transcribe_ref:
+        description: "teamsrec-transcribe branch, tag or commit to put into the suite"
+        default: main
 
 permissions:
   contents: write  # creating the release on a tag
@@ -22,20 +31,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/checkout@v4
+        with:
+          repository: drzdez/teamsrec-transcribe
+          ref: ${{ inputs.transcribe_ref || 'main' }}
+          path: transcribe-src
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: transcribe-src/desktop/package-lock.json
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: transcribe-src/desktop/src-tauri
+
       - name: Test
         run: dotnet test -c Release --logger "console;verbosity=normal"
+
+      - name: Build the review window
+        working-directory: transcribe-src/desktop
+        run: |
+          npm ci
+          npm run build
 
       - name: Build MSI
         id: msi
         run: |
-          $msi = ./installer/build-msi.ps1 | Select-Object -Last 1
           $version = (dotnet msbuild src/TeamsRec.Capture/TeamsRec.Capture.csproj -getProperty:Version).Trim()
+          $suite = ./installer/stage-suite.ps1 -Transcribe ../transcribe-src -Version $version `
+              -ReviewExe ../transcribe-src/desktop/src-tauri/target/release/teamsrec-review.exe | Select-Object -Last 1
+          $msi = ./installer/build-msi.ps1 -Suite $suite | Select-Object -Last 1
           "path=$msi" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
+          "transcribe=$((git -C ../transcribe-src rev-parse --short HEAD).Trim())" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,4 +84,7 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           if ($tag -ne "v${{ steps.msi.outputs.version }}") { throw "tag $tag does not match the project version ${{ steps.msi.outputs.version }}" }
-          gh release create $tag "${{ steps.msi.outputs.path }}" --title "teamsrec-capture $tag" --generate-notes
+          $notes = "The whole teamsrec suite: the recording app, the review window, and teamsrec-transcribe " +
+                   "${{ steps.msi.outputs.transcribe }} (drzdez/teamsrec-transcribe). The window prepares the Python " +
+                   "environment on its first start after the install or update."
+          gh release create $tag "${{ steps.msi.outputs.path }}" --title "teamsrec $tag" --notes $notes --generate-notes

@@ -41,13 +41,13 @@ public sealed class ScreenCaptureProcess
     }
 
     /// <summary>Stops the child and returns the videos it recorded. Idempotent; never throws.</summary>
-    public List<ScreenInfo> Stop()
+    public List<ScreenInfo> Stop(TimeSpan? timeout = null)
     {
         if (_result is not null) return _result;
         try
         {
             _proc.StandardInput.Close();  // the child's signal to finish
-            if (!_proc.WaitForExit(StopTimeout))
+            if (!_proc.WaitForExit(timeout ?? StopTimeout))
             {
                 Log.Warn($"screen capture process did not finish in {StopTimeout.TotalSeconds:0} s, stopping it");
                 // only the child: its encoders see their input close and still finish their files

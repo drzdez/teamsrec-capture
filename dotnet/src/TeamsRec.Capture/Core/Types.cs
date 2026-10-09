@@ -33,7 +33,13 @@ public interface INotifier
 }
 
 /// <summary>A recorded audio track (contract: tracks.sys / tracks.mic).</summary>
-public sealed record TrackInfo(string File, int SampleRate, int Channels, string Device);
+/// <summary>A recorded audio track (contract: tracks.sys / tracks.mic). Devices: every device the track was
+/// recorded from, with the second of the recording it started at – only when there was more than one.</summary>
+public sealed record TrackInfo(string File, int SampleRate, int Channels, string Device,
+                               IReadOnlyList<DeviceUse>? Devices = null);
+
+/// <summary>A device a track was recorded from, from this second of the recording on.</summary>
+public sealed record DeviceUse(string Device, double FromS);
 
 /// <summary>An input device that can be recorded from now.</summary>
 public sealed record InputDevice(string Id, string Name, int Channels, int SampleRate, bool IsDefault);
@@ -92,7 +98,10 @@ public interface IAudioSource
     DateTime Started { get; }
     IReadOnlyDictionary<string, TrackInfo> Tracks { get; }  // "sys" / "mic"
     string MicName { get; set; }    // preferred input (name fragment); "" = Windows default input
+    string OutputName { get; set; } // preferred output for the loopback (name fragment); "" = Windows default output
+    bool SysPending { get; }        // the loopback track waits for an output device (none at the start)
     bool Reopen();                  // reopen the streams on the current devices, pad the gap with silence
+    bool TryAddSys();               // the waiting loopback track: open it now if an output device exists
 }
 
 /// <summary>A recording after its streams were closed, handed to the finalizer.</summary>

@@ -18,7 +18,9 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
 
     /// <summary>Writes the sidecar and returns its path. Uses only what the recording itself carries
     /// (<paramref name="info"/>): the next recording may already be running, e.g. after an on-site upgrade.</summary>
-    public string Finalize(StoppedRecording r, string reason, RecordingInfo info)
+    /// <param name="quick">Windows is ending the session: no mix (teamsrec-transcribe builds it when it needs it)
+    /// and no new calendar lookup (Outlook is closing too) – only the sidecar, in a second.</param>
+    public string Finalize(StoppedRecording r, string reason, RecordingInfo info, bool quick = false)
     {
         var stem = r.StemPath;
         var files = r.Files.ToList();
@@ -27,7 +29,7 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
         string? mix = null;
         var audio = files.Where(IsWav).ToList();
         var ff = Mixer.MixWithFfmpeg ? FindFfmpeg() : null;
-        if (ff is not null && audio.Count > 0)
+        if (ff is not null && audio.Count > 0 && !quick)
             mix = Mixer.Mix(ff, stem, audio);
 
         var source = string.IsNullOrEmpty(info.Source) ? "live" : info.Source;
@@ -45,7 +47,9 @@ public sealed class Finalizer(Func<DateTime, string?, CalendarItem?> outlookMeet
                 titleSource = "window";
             }
         }
-        (cal, title, titleSource, var changed) = Rematch(r.Started, cal, title, titleSource, titlesSeen);
+        var changed = false;
+        if (!quick)
+            (cal, title, titleSource, changed) = Rematch(r.Started, cal, title, titleSource, titlesSeen);
 
         var stemName = Path.GetFileName(stem);
         // The prototype compared against stem.name[17:], one character past the slug start, so it always

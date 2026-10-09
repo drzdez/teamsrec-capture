@@ -87,10 +87,10 @@ files listed in `tracks` and `mix` may no longer exist; the sidecar remains the 
 | `source` | enum | yes | `live` = a Teams call, `playback` = playing back a stored recording, `manual` = manual recording without detection, `import` = an external file (e.g. a meeting recording downloaded from Teams), `onsite` = an on-site meeting from one microphone (only the `mic` track, everybody is on it, the user is not named from it; names from voice prints and diarization) |
 | `start`, `end` | ISO 8601 local time without zone | yes | start and end of recording |
 | `duration_s` | int | yes | length in seconds |
-| `stop_reason` | enum | yes | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `onsite_upgraded` (the on-site meeting moved to Teams), `n/a` (for `import`) |
+| `stop_reason` | enum | yes | `call_ended`, `max_duration`, `user_stop`, `silence`, `app_quit`, `onsite_upgraded` (the on-site meeting moved to Teams), `session_end` (Windows logged off, restarted or shut down during the recording: the files were closed properly, the mix is left to teamsrec-transcribe), `app_crash` (recovered at the next start after the app died), `n/a` (for `import`) |
 | `continues` | string | no | stem of the previous part: a live recording continuing an on-site recording that turned into a Teams call |
 | `language` | BCP‑47 | no | expected language of the meeting, default `cs` |
-| `tracks.sys` | track | no* | loopback; the only track for `playback` and `manual`; missing for `import` and `onsite` (*required for all but `import` and `onsite`) |
+| `tracks.sys` | track | no* | loopback; the only track for `playback` and `manual`; missing for `import` and `onsite` (*required for all but `import` and `onsite`; also missing when Windows had no output device during the whole call – the microphone is recorded alone, and a loopback that joins later starts with silence from the start of the recording) |
 | `tracks.mic` | track | no | microphone = the user; missing for `playback` |
 | `mix` | track | no | mono 16 kHz sum of all tracks, input for ASR; missing when the mix failed; for `import` the only and required track |
 | `origin_file` | string | no | only `import`: the original name of the file the recording came from |
@@ -103,7 +103,7 @@ files listed in `tracks` and `mix` may no longer exist; the sidecar remains the 
 | `audio_reopens` | int | no | how many times the watchdog had to reopen the audio streams |
 | `teams_windows_seen[]` | string | no | debugging information |
 
-The `track` object: `file` (file name only, no path), `sample_rate` (Hz), `channels` (1 or 2). WAV is always 16-bit PCM.
+The `track` object: `file` (file name only, no path), `sample_rate` (Hz), `channels` (1 or 2); optionally `device` (the device it was recorded from, the last one) and `devices` (`[{"device", "from_s"}]`, only when the device changed during the recording: a headset switched on, another output taken by the call – a later device with another rate is converted to the file's). WAV is always 16-bit PCM.
 
 ## Imported recordings (`source: import`)
 

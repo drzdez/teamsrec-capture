@@ -359,6 +359,8 @@ public sealed class MonitorLoop : IDisposable
             WatchTeamsWindow();
         // during a call, follow a headset switch; on-site and playback record what they were told to
         _watchdog.FollowCallMic(rec, () => Devices.CallInputDevice(), applies: !_playback && !_onsite);
+        _watchdog.FollowCallOutput(rec, () => Devices.CallOutputDevice(), applies: !_playback && !_onsite);
+        _watchdog.AddPendingSys(rec);
 
         if (elapsed > AppLogic.MaxDurationS)
             Stop("max duration");
@@ -723,7 +725,23 @@ public sealed class MonitorLoop : IDisposable
     /// <summary>Stop the running recording: delete it (aborted, too short, no audio file at all) or hand it to
     /// the finalizer on a background task with the metadata captured NOW - the next recording (on-site
     /// upgrade) may start before the sidecar is written.</summary>
-    public void Stop(string reason)
+    /// <summary>Windows is ending the session (logoff, restart, shutdown) during a recording: close the audio
+    /// files and write the sidecar now, in the few seconds Windows gives (TrayApp asks for more), instead of being
+    /// killed and recovered at the next start without the meeting's title and participants. The mix is left to
+    /// teamsrec-transcribe; the window videos get a few seconds to close (they are playable even when cut).</summary>
+    public void EndSession()
+    {
+        bool recording;
+        lock (_lock) recording = _rec is not null;
+        if (!recording)
+            return;
+        Log.Info("Windows is ending the session: closing the recording now");
+        Stop("session end", quick: true);
+    }
+
+    public void Stop(string reason) => Stop(reason, quick: false);
+
+    private void Stop(string reason, bool quick)
     {
         Recorder rec;
         string stemPath;
@@ -751,7 +769,7 @@ public sealed class MonitorLoop : IDisposable
         IReadOnlyList<ScreenInfo> screens = [];
         if (sc is not null)
         {
-            try { screens = sc.Stop(); }
+            try { screens = quick ? sc.Stop(TimeSpan.FromSeconds(3)) : sc.Stop(); }
             catch (Exception e) { FileLog.Exception("screen capture stop", e); }
         }
         var dir = Path.GetDirectoryName(stemPath)!;
@@ -779,6 +797,11 @@ public sealed class MonitorLoop : IDisposable
         var stopped = new StoppedRecording(stemPath, rec.Started, dur, rec.Reopens, rec.HeardSys, rec.HeardMic,
                                            new Dictionary<string, TrackInfo>(rec.Tracks), files, screens);
         DisposeQuietly(rec);
+        if (quick)  // the session ends: no thread may outlive this call
+        {
+            Guard("finalize", () => _finalizer.Finalize(stopped, reason, info, quick: true));
+            return;
+        }
         var task = Task.Run(() => Guard("finalize", () => _finalizer.Finalize(stopped, reason, info)));
         lock (_finalizing)
         {

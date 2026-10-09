@@ -134,13 +134,18 @@ public static class Devices
 
     /// <summary>(microphone, pid) for every active audio capture session on an active input device. The Core
     /// Audio session list says who records from which microphone, whichever app it is.</summary>
-    public static List<CaptureSession> CaptureSessions()
+    public static List<CaptureSession> CaptureSessions() => Sessions(DataFlow.Capture);
+
+    /// <summary>(output, pid) for every active playback session: who plays into which output device.</summary>
+    public static List<CaptureSession> RenderSessions() => Sessions(DataFlow.Render);
+
+    private static List<CaptureSession> Sessions(DataFlow flow)
     {
         var result = new List<CaptureSession>();
         try
         {
             using var en = new MMDeviceEnumerator();
-            foreach (var dev in en.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+            foreach (var dev in en.EnumerateAudioEndPoints(flow, DeviceState.Active))
             {
                 using (dev)
                 {
@@ -181,7 +186,18 @@ public static class Devices
     /// records. The delegates replace the OS lookups in tests.</summary>
     public static string? CallInputDevice(IEnumerable<CaptureSession>? sessions = null,
                                           Func<int, string>? processName = null,
-                                          Func<int, bool>? isTeams = null)
+                                          Func<int, bool>? isTeams = null) =>
+        CallDevice(sessions ?? CaptureSessions(), processName, isTeams, anyApp: true);
+
+    /// <summary>The output the call plays into: Teams first, then a known call app. Other apps playing sound
+    /// (music, a browser tab) do not count – null then, and the recorder keeps the Windows default output.</summary>
+    public static string? CallOutputDevice(IEnumerable<CaptureSession>? sessions = null,
+                                           Func<int, string>? processName = null,
+                                           Func<int, bool>? isTeams = null) =>
+        CallDevice(sessions ?? RenderSessions(), processName, isTeams, anyApp: false);
+
+    private static string? CallDevice(IEnumerable<CaptureSession> sessions, Func<int, string>? processName,
+                                      Func<int, bool>? isTeams, bool anyApp)
     {
         Dictionary<int, (int Parent, string Name)>? snapshot = null;
         Dictionary<int, (int Parent, string Name)> Snap() => snapshot ??= ProcessTree.Snapshot();
@@ -194,7 +210,7 @@ public static class Devices
 
         string? best = null;
         int rank = 99;
-        foreach (var s in sessions ?? CaptureSessions())
+        foreach (var s in sessions)
         {
             if (s.ProcessId == 0 || me.Contains(s.ProcessId))
                 continue;
@@ -207,6 +223,8 @@ public static class Devices
                 int idx = IndexOf(CallApps, name);
                 r = idx >= 0 ? idx + 1 : 50;
             }
+            if (r == 50 && !anyApp)
+                continue;  // an output: only a call app's sound says where the call plays
             if (r < rank)
             {
                 best = s.DeviceName;
@@ -268,6 +286,20 @@ public static class Devices
     internal static MMDevice? DefaultInputEndpoint(MMDeviceEnumerator en) =>
         en.HasDefaultAudioEndpoint(DataFlow.Capture, DefaultRole)
             ? en.GetDefaultAudioEndpoint(DataFlow.Capture, DefaultRole) : null;
+
+    /// <summary>An active output whose name contains namePart (the device the call plays into), or null.</summary>
+    internal static MMDevice? FindRenderEndpoint(MMDeviceEnumerator en, string namePart)
+    {
+        MMDevice? found = null;
+        foreach (var d in en.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            if (found == null && d.FriendlyName.Contains(namePart, StringComparison.OrdinalIgnoreCase))
+                found = d;
+            else
+                d.Dispose();
+        }
+        return found;
+    }
 
     internal static MMDevice? DefaultRenderEndpoint(MMDeviceEnumerator en) =>
         en.HasDefaultAudioEndpoint(DataFlow.Render, DefaultRole)

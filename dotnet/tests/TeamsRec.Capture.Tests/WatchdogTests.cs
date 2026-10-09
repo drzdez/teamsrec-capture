@@ -48,8 +48,17 @@ public sealed class WatchdogTests
         public Dictionary<string, TrackInfo> TrackMap { get; } = [];
         public IReadOnlyDictionary<string, TrackInfo> Tracks => TrackMap;
         public string MicName { get; set; } = "";
+        public string OutputName { get; set; } = "";
+        public bool SysPending { get; set; }
+        public int AddSysCalls { get; private set; }
         /// <summary>What a reopen does to the tracks; default: nothing (the same devices are reopened).</summary>
         public Action? OnReopen { get; set; }
+
+        public bool TryAddSys()
+        {
+            AddSysCalls++;
+            return false;
+        }
 
         public bool Reopen()
         {
@@ -61,6 +70,50 @@ public sealed class WatchdogTests
     }
 
     private static TrackInfo Mic(string device) => new("x.mic.wav", 48000, 1, device);
+
+    [Fact]
+    public void The_recording_follows_the_output_the_call_plays_into()
+    {
+        // 1.1.1: Teams plays into a headset switched on mid-call while the old speakers still exist
+        var clock = new WdFakeClock();
+        var wd = new Watchdog(clock, new WdFakeNotifier());
+        var rec = new WdFakeRec(clock);
+        rec.TrackMap["sys"] = new TrackInfo("x_sys.wav", 48000, 2, "Reproduktory (Realtek) [Loopback]");
+        string? output = "Reproduktory (Realtek)";
+        wd.FollowCallOutput(rec, () => output, applies: true);
+        Assert.Equal(0, rec.ReopenCalls);  // the recorded one
+        clock.Advance(Watchdog.CallOutputCheckS);
+        output = "Sluchátka (Sony WH-1000XM6)";
+        wd.FollowCallOutput(rec, () => output, applies: true);
+        Assert.Equal(1, rec.ReopenCalls);
+        Assert.Equal("Sluchátka (Sony WH-1000XM6)", rec.OutputName);  // where the reopen goes
+        wd.FollowCallOutput(rec, () => output, applies: true);
+        Assert.Equal(1, rec.ReopenCalls);  // not before the next check
+        clock.Advance(Watchdog.CallOutputCheckS);
+        wd.FollowCallOutput(rec, () => null, applies: true);  // no call app plays: nothing changes
+        Assert.Equal(1, rec.ReopenCalls);
+        clock.Advance(Watchdog.CallOutputCheckS);
+        wd.FollowCallOutput(rec, () => "Jiné", applies: false);  // playback / on site
+        Assert.Equal(1, rec.ReopenCalls);
+    }
+
+    [Fact]
+    public void Without_an_output_at_the_start_the_other_side_is_looked_for_every_few_seconds()
+    {
+        var clock = new WdFakeClock();
+        var wd = new Watchdog(clock, new WdFakeNotifier());
+        var rec = new WdFakeRec(clock) { SysPending = true };
+        wd.AddPendingSys(rec);
+        wd.AddPendingSys(rec);
+        Assert.Equal(1, rec.AddSysCalls);
+        clock.Advance(Watchdog.SysPendingCheckS);
+        wd.AddPendingSys(rec);
+        Assert.Equal(2, rec.AddSysCalls);
+        rec.SysPending = false;  // the output appeared
+        clock.Advance(Watchdog.SysPendingCheckS);
+        wd.AddPendingSys(rec);
+        Assert.Equal(2, rec.AddSysCalls);
+    }
 
     [Fact]
     public void Watchdog_backoff()
@@ -189,12 +242,12 @@ public sealed class WatchdogTests
         wd.FollowCallMic(rec, callMic, applies: true);  // checked again only after TEAMS_MIC_CHECK_S
         Assert.Equal(1, rec.Reopens);
 
-        // a different sample format cannot go into the same file: say so, once
+        // a microphone that would not open (another format is converted since 1.1.1): say so, once
         rec.TrackMap["mic"] = Mic("Mikrofon (Creative BT-W5)");
         sameFormat = false;
         clock.Advance(Watchdog.TeamsMicCheckS);
         wd.FollowCallMic(rec, callMic, applies: true);
-        Assert.Contains("nezachytí", notes.Notes[^1]);
+        Assert.Contains("nepodařilo otevřít", notes.Notes[^1]);
         int n = notes.Notes.Count;
         clock.Advance(Watchdog.TeamsMicCheckS + 30);
         wd.FollowCallMic(rec, callMic, applies: true);

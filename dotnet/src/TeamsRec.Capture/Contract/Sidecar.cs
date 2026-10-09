@@ -20,6 +20,7 @@ public static class StopReasons
     public const string AppQuit = "app_quit";
     public const string OnsiteUpgraded = "onsite_upgraded";
     public const string AppCrash = "app_crash";  // orphan recovery: the app died mid-recording
+    public const string SessionEnd = "session_end";  // Windows logged off / restarted / shut down mid-recording
 
     private static readonly Dictionary<string, string> Map = new(StringComparer.Ordinal)
     {
@@ -29,6 +30,7 @@ public static class StopReasons
         ["silence"] = Silence,
         ["quit"] = AppQuit,
         ["upgraded"] = OnsiteUpgraded,
+        ["session end"] = SessionEnd,
     };
 
     /// <summary>Unknown reasons count as a user stop, as in the prototype (.get(reason, "user_stop")).</summary>
@@ -143,8 +145,20 @@ public sealed class SidecarTrack
     [JsonPropertyName("device"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Device { get; set; }
 
+    /// <summary>Every device the track was recorded from and the second it started at – only when the device
+    /// changed during the recording (a headset switched on, another output taken by the call).</summary>
+    [JsonPropertyName("devices"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<SidecarDeviceUse>? Devices { get; set; }
+
     public static SidecarTrack From(TrackInfo t) =>
-        new() { File = t.File, SampleRate = t.SampleRate, Channels = t.Channels, Device = t.Device };
+        new() { File = t.File, SampleRate = t.SampleRate, Channels = t.Channels, Device = t.Device,
+                Devices = t.Devices?.Select(d => new SidecarDeviceUse { Device = d.Device, FromS = d.FromS }).ToList() };
+}
+
+public sealed class SidecarDeviceUse
+{
+    [JsonPropertyName("device")] public string Device { get; set; } = "";
+    [JsonPropertyName("from_s")] public double FromS { get; set; }
 }
 
 /// <summary>The mono 16 kHz mix for ASR.</summary>

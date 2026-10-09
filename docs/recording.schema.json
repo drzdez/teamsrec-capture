@@ -62,6 +62,9 @@
         "user_stop",
         "silence",
         "app_quit",
+        "onsite_upgraded",
+        "session_end",
+        "app_crash",
         "n/a"
       ]
     },
@@ -153,6 +156,29 @@
             1,
             2
           ]
+        },
+        "device": {
+          "type": "string"
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "device",
+              "from_s"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "device": {
+                "type": "string"
+              },
+              "from_s": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
         }
       }
     }

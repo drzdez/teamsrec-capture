@@ -19,6 +19,8 @@ public sealed class Watchdog
     public const double AudioRewarnS = 300;  // the "no audio" alarm repeats this often: one notification is missed in a meeting
 
     public const double TeamsMicCheckS = 30;
+    public const double CallOutputCheckS = 10;  // the output the call plays into is looked up this often
+    public const double SysPendingCheckS = 5;   // with no output at the start: look for one this often
     public const double DeadMicS = 120;      // a microphone without even room noise this long is not the one in use
 
     // A reopen whose data stops again within this many seconds of the verdict did not bring the device back.
@@ -35,6 +37,8 @@ public sealed class Watchdog
     // that could not be followed is not announced again.
     private double _teamsMicChecked = double.NegativeInfinity;
     private string? _teamsMicWarned;
+    private double _callOutputChecked = double.NegativeInfinity;
+    private double _sysPendingChecked = double.NegativeInfinity;
 
     public Watchdog(IClock clock, INotifier notifier)
     {
@@ -180,12 +184,67 @@ public sealed class Watchdog
         {
             _notifier.Notify($"Mikrofon přepnut na „{current}“ (ten teď používá hovor).");
         }
-        else  // different sample format: one file cannot hold both
+        else  // the device would not open (another format is converted since 1.1.1, so it is not that)
         {
             _teamsMicWarned = current;
-            _notifier.Notify($"Hovor používá mikrofon „{current}“, ale nahrávka ho nezachytí (jiný formát). "
-                             + "Váš hlas bude v nahrávce chybět.");
+            _notifier.Notify($"Hovor používá mikrofon „{current}“, ale v nahrávce se ho nepodařilo otevřít. "
+                             + "Váš hlas může v nahrávce chybět.");
             _notifier.Beep();
+        }
+    }
+
+    /// <summary>
+    /// The other side of the call: record the output the call really plays into. Teams may play into a headset
+    /// switched on during the call while the old speakers are still there – then the loopback of the old device
+    /// carries silence and the other participants are missing. Every <see cref="CallOutputCheckS"/> the output of
+    /// the call is looked up; when it differs from the recorded one, the streams are reopened on it (another rate is
+    /// converted, see Recorder). Unknown (no call app plays) = nothing changes.
+    /// </summary>
+    public void FollowCallOutput(IAudioSource rec, Func<string?> callOutputDevice, bool applies)
+    {
+        if (!applies || rec.MicOnly)
+            return;
+        double now = _clock.Seconds;
+        if (now - _callOutputChecked < CallOutputCheckS)
+            return;
+        _callOutputChecked = now;
+        string? current = callOutputDevice();
+        if (string.IsNullOrEmpty(current))
+            return;
+        rec.OutputName = current;  // also where a waiting loopback track (TryAddSys) and every reopen go
+        if (!rec.Tracks.TryGetValue("sys", out var sys))
+            return;
+        if (sys.Device.StartsWith(current, StringComparison.Ordinal))  // "<name> [Loopback]"
+            return;
+        Log.Warn($"the call now plays into '{current}', the recording has '{sys.Device}'");
+        try
+        {
+            rec.Reopen();
+        }
+        catch (Exception e)
+        {
+            Log.Error($"reopen on the call's output: {e}");
+        }
+    }
+
+    /// <summary>No output device at the start (a headset off): the microphone records, and every
+    /// <see cref="SysPendingCheckS"/> the other side is tried again – it joins once an output appears. No message:
+    /// the user hears nothing either and is reconnecting.</summary>
+    public void AddPendingSys(IAudioSource rec)
+    {
+        if (!rec.SysPending)
+            return;
+        double now = _clock.Seconds;
+        if (now - _sysPendingChecked < SysPendingCheckS)
+            return;
+        _sysPendingChecked = now;
+        try
+        {
+            rec.TryAddSys();
+        }
+        catch (Exception e)
+        {
+            Log.Error($"adding the other side: {e}");
         }
     }
 

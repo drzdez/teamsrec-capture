@@ -8,7 +8,14 @@ namespace TeamsRec.Capture.Audio;
 
 /// <summary>Records the system sound (WASAPI loopback of the default output) and the microphone into
 /// &lt;stem&gt;_sys.wav / &lt;stem&gt;_mic.wav, 16-bit PCM at the device rate (contract: "WAV je vždy PCM
-/// 16-bit"). Port of the prototype's Recorder, including reopen() and the watchdog fields.</summary>
+/// 16-bit"). Port of the prototype's Recorder, including reopen() and the watchdog fields.
+///
+/// The devices may change during a call (a headset switched on, another one taken): each file keeps the format
+/// of its first device, and the sound of a later device with another rate is converted to it in the writer
+/// thread (never in the capture callback, so a busy machine only delays the writing). With no output device at
+/// the start the call is recorded from the microphone alone and the loopback track is added once an output
+/// appears, its start padded with silence (2026-10-08: the headset was off when the call started, nothing was
+/// recorded for 4 minutes).</summary>
 public sealed class Recorder : IAudioSource, IDisposable
 {
     public const int SilenceLevel = 300;  // int16 peak below this counts as silence
@@ -24,6 +31,8 @@ public sealed class Recorder : IAudioSource, IDisposable
     private bool _stopped;
     private double _stoppedDuration;
 
+    private readonly double _startS;  // the clock's seconds at the start: the offset of a track added later
+    private bool _sysPending;          // no output device at the start: the loopback track is still to come
     private double _lastData, _lastLoud, _lastMicLoud, _lastMicAlive;
     private double _lastMicData = double.NaN;
     private long _bytesReceived;
@@ -39,6 +48,7 @@ public sealed class Recorder : IAudioSource, IDisposable
         _clock = clock;
         Started = clock.Now;
         double now = clock.Seconds;
+        _startS = now;
         _lastLoud = now;       // last time the system track was not silent
         _lastData = now;       // watchdog: last time any stream delivered a buffer
         _lastMicLoud = 0.0;    // watchdog: last time the user was audibly speaking
@@ -48,6 +58,8 @@ public sealed class Recorder : IAudioSource, IDisposable
     public bool WithMic { get; }
     public bool MicOnly { get; }
     public string MicName { get; set; }
+    public string OutputName { get; set; } = "";  // the output the call plays into (Teams), else the default
+    public bool SysPending { get { lock (_sync) return _sysPending; } }
     public DateTime Started { get; }
     public double LastData => Volatile.Read(ref _lastData);
     public double LastLoud => Volatile.Read(ref _lastLoud);
@@ -71,6 +83,11 @@ public sealed class Recorder : IAudioSource, IDisposable
         {
             var files = new List<string>();
             var (sys, mic) = ResolveDevices();
+            if (sys == null && !MicOnly)
+            {
+                _sysPending = true;
+                Log.Warn("no output device: recording the microphone; the other side joins once an output appears");
+            }
             if (sys != null)
             {
                 try
@@ -117,7 +134,7 @@ public sealed class Recorder : IAudioSource, IDisposable
         {
             if (_stopped)
                 return false;
-            double gap = Math.Max(0.0, _clock.Seconds - LastData);
+            double lastBefore = LastData;  // the last sound of the old streams (each track pads from here)
             foreach (var t in _state.Values)
                 CloseCapture(t);
 
@@ -140,19 +157,19 @@ public sealed class Recorder : IAudioSource, IDisposable
                 try
                 {
                     var (rate, ch) = OutputFormat(dev);
-                    if (rate != t.Rate || ch != t.Channels)
-                    {
-                        Log.Warn($"reopen {name}: device format {rate} Hz x{ch} differs from the file " +
-                                 $"({t.Rate} Hz x{t.Channels}), track stays as is");
-                        continue;
-                    }
-                    if (gap > 0.5)
-                        PadSilence(t, gap);  // silence for the lost stretch
+                    // silence for the stretch without data – measured now, after closing and looking up the devices,
+                    // so the time the reopen itself takes is covered too (it was ~0.7 s per reopen before 1.1.1)
+                    double gap = Math.Max(0.0, _clock.Seconds - lastBefore);
+                    if (gap > 0.05)
+                        PadSilence(t, gap);
+                    var before = t.DeviceName;
                     OpenCapture(t, dev, name == "sys");
                     if (name == "sys") sys = null; else mic = null;  // owned by the track now
-                    _tracks[name] = _tracks[name] with { Device = t.DeviceName };
+                    UseDevice(name, t);
                     ok++;
-                    Log.Info($"reopened {name} on {t.DeviceName} after {gap:0} s without data");
+                    Log.Info($"reopened {name} on {t.DeviceName} after {gap:0} s without data" +
+                             (t.DeviceName != before ? $" (was {before})" : "") +
+                             (rate != t.Rate ? $", {rate} Hz converted to the file's {t.Rate} Hz" : ""));
                 }
                 catch (Exception e)
                 {
@@ -164,6 +181,45 @@ public sealed class Recorder : IAudioSource, IDisposable
             Volatile.Write(ref _lastData, _clock.Seconds);
             Interlocked.Increment(ref _reopens);
             return ok > 0;
+        }
+    }
+
+    /// <summary>The loopback track that had no output device at the start: open it on the output that exists
+    /// now (the call's, else the default), its file padded with silence from the start of the recording so it
+    /// stays aligned with the microphone and the window videos. False while there is still no output.</summary>
+    public bool TryAddSys()
+    {
+        lock (_sync)
+        {
+            if (!_sysPending || _stopped)
+                return false;
+            MMDevice? sys;
+            try
+            {
+                using var en = new MMDeviceEnumerator();
+                sys = RenderEndpoint(en);
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"output lookup failed: {e.Message}");
+                return false;
+            }
+            if (sys == null)
+                return false;
+            double lead = Math.Max(0.0, _clock.Seconds - _startS);
+            try
+            {
+                Open("sys", sys, "_sys.wav", lead);
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"the output appeared but its loopback did not open: {e.Message}");
+                sys.Dispose();
+                return false;
+            }
+            _sysPending = false;
+            Log.Info($"the other side joins the recording after {lead:0} s (padded with silence)");
+            return true;
         }
     }
 
@@ -210,8 +266,9 @@ public sealed class Recorder : IAudioSource, IDisposable
         public readonly string Path = path;
         public readonly int Rate = rate;          // the file's format; never changes after the first open
         public readonly int Channels = channels;
-        // the writer's input, kept across a device reopen so the file keeps growing
-        public readonly BlockingCollection<byte[]> Queue = new();
+        // the writer's input, kept across a device reopen so the file keeps growing; each chunk says its rate
+        public readonly BlockingCollection<Chunk> Queue = new();
+        public readonly List<DeviceUse> Devices = new();  // every device the track was recorded from
         public Thread Writer = null!;
         public IWaveIn? Capture;
         public MMDevice? Device;
@@ -224,8 +281,7 @@ public sealed class Recorder : IAudioSource, IDisposable
         using var en = new MMDeviceEnumerator();
         MMDevice? sys = null, mic = null;
         if (!MicOnly)
-            sys = Devices.DefaultRenderEndpoint(en)
-                  ?? throw new InvalidOperationException("no default output device for the loopback");
+            sys = RenderEndpoint(en);  // null = no output device now: the loopback track waits (TryAddSys)
         if (WithMic)
         {
             try
@@ -243,6 +299,29 @@ public sealed class Recorder : IAudioSource, IDisposable
         return (sys, mic);
     }
 
+    /// <summary>The output to record the other side from: the one the call plays into (OutputName), else the
+    /// Windows default output; null when there is none.</summary>
+    private MMDevice? RenderEndpoint(MMDeviceEnumerator en)
+    {
+        if (OutputName.Length > 0)
+        {
+            var found = Devices.FindRenderEndpoint(en, OutputName);
+            if (found != null)
+                return found;
+            Log.Warn($"output device '{OutputName}' not found or not active, using the default output");
+        }
+        return Devices.DefaultRenderEndpoint(en);
+    }
+
+    /// <summary>The track's current device into the sidecar info (the device list only once there are two).</summary>
+    private void UseDevice(string name, Track t)
+    {
+        if (t.Devices.Count == 0 || t.Devices[^1].Device != t.DeviceName)
+            t.Devices.Add(new DeviceUse(t.DeviceName, Math.Round(Math.Max(0.0, _clock.Seconds - _startS), 1)));
+        _tracks[name] = new TrackInfo(System.IO.Path.GetFileName(t.Path), t.Rate, t.Channels, t.DeviceName,
+                                      t.Devices.Count > 1 ? t.Devices.ToList() : null);
+    }
+
     /// <summary>The file format for a device: its own rate, at most 2 channels, 16 bit.</summary>
     private static (int Rate, int Channels) OutputFormat(MMDevice dev)
     {
@@ -250,11 +329,13 @@ public sealed class Recorder : IAudioSource, IDisposable
         return (rate, Math.Clamp(ch, 1, 2));
     }
 
-    private string Open(string name, MMDevice dev, string suffix)
+    private string Open(string name, MMDevice dev, string suffix, double leadSilenceS = 0)
     {
         var (rate, ch) = OutputFormat(dev);
         var path = _stem + suffix;
         var t = new Track(name, path, rate, ch);
+        if (leadSilenceS > 0)
+            PadSilence(t, leadSilenceS);  // a track added later starts where the recording started
         // Start the capture before creating the file: when the device refuses to open, nothing is left on disk.
         // The queue buffers the first few milliseconds until the writer runs.
         OpenCapture(t, dev, name == "sys");
@@ -271,7 +352,7 @@ public sealed class Recorder : IAudioSource, IDisposable
         t.Writer = new Thread(() => WriterLoop(t, wav)) { IsBackground = true, Name = $"wav-{name}" };
         t.Writer.Start();
         _state[name] = t;
-        _tracks[name] = new TrackInfo(System.IO.Path.GetFileName(path), rate, ch, t.DeviceName);
+        UseDevice(name, t);
         Log.Info($"recording {System.IO.Path.GetFileName(path)}  {rate} Hz x{ch}  <- {t.DeviceName}");
         return path;
     }
@@ -283,9 +364,10 @@ public sealed class Recorder : IAudioSource, IDisposable
         try
         {
             var fmt = SampleFormat.Of(capture.WaveFormat);
+            int rate = capture.WaveFormat.SampleRate;  // may differ from the file's after a device switch
             bool isSys = loopback;
             string displayName = loopback ? dev.FriendlyName + " [Loopback]" : dev.FriendlyName;
-            capture.DataAvailable += (_, e) => OnData(t, isSys, fmt, e);
+            capture.DataAvailable += (_, e) => OnData(t, isSys, fmt, rate, e);
             capture.RecordingStopped += (_, e) =>
             {
                 // A device that disappears (AUDCLNT_E_DEVICE_INVALIDATED) ends here; the watchdog notices the
@@ -330,7 +412,7 @@ public sealed class Recorder : IAudioSource, IDisposable
     }
 
     /// <summary>The capture callback: never blocks (the queue is unbounded, the writer thread does the IO).</summary>
-    private void OnData(Track t, bool isSys, SampleFormat fmt, WaveInEventArgs e)
+    private void OnData(Track t, bool isSys, SampleFormat fmt, int rate, WaveInEventArgs e)
     {
         if (e.BytesRecorded <= 0)
             return;
@@ -339,7 +421,7 @@ public sealed class Recorder : IAudioSource, IDisposable
             return;
         try
         {
-            t.Queue.Add(pcm);
+            t.Queue.Add(new Chunk(pcm, rate));
         }
         catch (InvalidOperationException)
         {
@@ -376,7 +458,7 @@ public sealed class Recorder : IAudioSource, IDisposable
         while (frames > 0)
         {
             int n = (int)Math.Min(frames, t.Rate);
-            t.Queue.Add(new byte[n * frameBytes]);
+            t.Queue.Add(new Chunk(new byte[n * frameBytes], t.Rate));
             frames -= n;
         }
     }
@@ -384,11 +466,19 @@ public sealed class Recorder : IAudioSource, IDisposable
     private static void WriterLoop(Track t, WaveFileWriter wav)
     {
         long lastFlush = Environment.TickCount64;
+        RateConverter? conv = null;  // the sound of a device with another rate than the file's
         try
         {
             foreach (var chunk in t.Queue.GetConsumingEnumerable())
             {
-                wav.Write(chunk, 0, chunk.Length);
+                var data = chunk.Data;
+                if (chunk.Rate != t.Rate)
+                {
+                    if (conv == null || conv.InRate != chunk.Rate)
+                        conv = new RateConverter(chunk.Rate, t.Rate, t.Channels);
+                    data = conv.Convert(data);
+                }
+                wav.Write(data, 0, data.Length);
                 // Keep the RIFF header current, so a crash leaves a playable file (the prototype needed
                 // _repair_wav for that).
                 if (Environment.TickCount64 - lastFlush > 5000)
@@ -415,6 +505,51 @@ public sealed class Recorder : IAudioSource, IDisposable
         }
     }
 
+}
+
+/// <summary>16-bit PCM from one device, at its rate (the file may have another).</summary>
+public readonly record struct Chunk(byte[] Data, int Rate);
+
+/// <summary>Converts 16-bit PCM between sample rates (NAudio's WDL resampler, the windowed-sinc mode), keeping its
+/// state across chunks so the joins are seamless. Runs in the writer thread.</summary>
+public sealed class RateConverter
+{
+    private readonly NAudio.Dsp.WdlResampler _r = new();
+    private readonly int _channels;
+    public int InRate { get; }
+    public int OutRate { get; }
+
+    public RateConverter(int inRate, int outRate, int channels)
+    {
+        InRate = inRate;
+        OutRate = outRate;
+        _channels = channels;
+        _r.SetMode(true, 2, false);
+        _r.SetFilterParms();
+        _r.SetFeedMode(true);  // input driven: every chunk goes in whole
+        _r.SetRates(inRate, outRate);
+    }
+
+    public byte[] Convert(byte[] pcm16)
+    {
+        int inFrames = pcm16.Length / 2 / _channels;
+        if (inFrames == 0)
+            return [];
+        int need = _r.ResamplePrepare(inFrames, _channels, out var inBuf, out int inOff);
+        int n = Math.Min(need, inFrames) * _channels;
+        for (int i = 0; i < n; i++)
+            inBuf[inOff + i] = BinaryPrimitives.ReadInt16LittleEndian(pcm16.AsSpan(i * 2, 2)) / 32768f;
+        int maxOut = (int)((long)inFrames * OutRate / InRate) + 64;
+        var outBuf = new float[maxOut * _channels];
+        int outFrames = _r.ResampleOut(outBuf, 0, Math.Min(need, inFrames), maxOut, _channels);
+        var result = new byte[outFrames * _channels * 2];
+        for (int i = 0; i < outFrames * _channels; i++)
+        {
+            float v = Math.Clamp(outBuf[i], -1f, 1f);
+            BinaryPrimitives.WriteInt16LittleEndian(result.AsSpan(i * 2, 2), (short)Math.Round(v * 32767f));
+        }
+        return result;
+    }
 }
 
 /// <summary>Layout of the samples a WASAPI stream delivers.</summary>

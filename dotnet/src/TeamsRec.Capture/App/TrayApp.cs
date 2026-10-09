@@ -22,7 +22,8 @@ public sealed class TrayApp : ApplicationContext, INotifier
     private static readonly Icon IconIdleMarked = RoundIcon(Color.FromArgb(0x7f, 0x8c, 0x8d), marked: true);
 
     private readonly AppConfig _cfg;
-    private readonly Control _ui;             // owns the UI thread's handle, for BeginInvoke from other threads
+    private readonly Control _ui;
+    private readonly IntPtr _uiHandle;  // for the session-end handler, which runs on another thread             // owns the UI thread's handle, for BeginInvoke from other threads
     private readonly NotifyIcon _icon;
     private readonly MonitorLoop _loop;
     private readonly SettingsServer _settings;
@@ -44,7 +45,7 @@ public sealed class TrayApp : ApplicationContext, INotifier
         _cfg = cfg;
         _ui = new Control();
         _ui.CreateControl();
-        _ = _ui.Handle;  // force the handle now: BeginInvoke from the loop must work before the first repaint
+        _uiHandle = _ui.Handle;  // force the handle now: BeginInvoke from the loop must work before the first repaint
 
         _loop = new MonitorLoop(cfg, clock, this);
         _loop.Changed += () => OnUi(RefreshIcon);
@@ -101,6 +102,8 @@ public sealed class TrayApp : ApplicationContext, INotifier
                 OpenReview(stem: _balloonStem);
         };
         _updater = new Updater(cfg, rel => OnUi(() => OnUpdateFound(rel)));
+        // Windows ends the session (logoff, restart, shutdown): close a running recording properly first
+        Microsoft.Win32.SystemEvents.SessionEnding += (_, _) => OnSessionEnding();
         _reviewPoll.Tick += (_, _) => PollReview();
         _reviewPoll.Start();
         PollReview();
@@ -108,6 +111,30 @@ public sealed class TrayApp : ApplicationContext, INotifier
     }
 
     public MonitorLoop Loop => _loop;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool ShutdownBlockReasonCreate(IntPtr hWnd, string reason);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShutdownBlockReasonDestroy(IntPtr hWnd);
+
+    /// <summary>Asks Windows for the time to finish (it shows "teamsrec: Ukládám nahrávku" if the user waits on the
+    /// shutdown screen) and closes the recording – synchronously: Windows ends the process right after.</summary>
+    private void OnSessionEnding()
+    {
+        if (!_loop.Recording)
+            return;
+        bool blocked = false;
+        try { blocked = ShutdownBlockReasonCreate(_uiHandle, "Ukládám nahrávku schůzky"); }
+        catch (Exception e) { FileLog.Exception("shutdown block", e); }
+        try { _loop.EndSession(); }
+        catch (Exception e) { FileLog.Exception("session end", e); }
+        finally
+        {
+            if (blocked)
+                try { ShutdownBlockReasonDestroy(_uiHandle); } catch (Exception) { }
+        }
+    }
 
     // ------------------------------------------------------------------ INotifier
     public void Notify(string message)

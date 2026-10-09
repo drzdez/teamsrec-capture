@@ -21,11 +21,10 @@ public static class Orphans
     {
         findFfmpeg ??= Mixer.FindFfmpeg;
         var n = 0;
-        foreach (var sysfile in SysFiles(outDir))
+        foreach (var stem in AudioStems(outDir))
         {
-            var name = Path.GetFileName(sysfile);
-            var dir = Path.GetDirectoryName(sysfile)!;
-            var stem = Path.Combine(dir, name[..^"_sys.wav".Length]);
+            var dir = Path.GetDirectoryName(stem)!;
+            var sysfile = File.Exists(stem + "_sys.wav") ? stem + "_sys.wav" : stem + "_mic.wav";
             if (File.Exists(stem + ".json"))
                 continue;
             var audio = new[] { stem + "_sys.wav", stem + "_mic.wav" }
@@ -99,8 +98,15 @@ public static class Orphans
         return n;
     }
 
-    /// <summary>&lt;out&gt;/[0-9]*/[0-9]*/*/*_sys.wav, sorted (the prototype's glob).</summary>
-    private static IEnumerable<string> SysFiles(string outDir)
+    /// <summary>The stems of &lt;out&gt;/[0-9]*/[0-9]*/*/*_sys.wav and *_mic.wav, sorted: a recording may have the
+    /// microphone only (on site, or a call whose output device never appeared).</summary>
+    private static IEnumerable<string> AudioStems(string outDir) =>
+        TrackFiles(outDir, "*_sys.wav").Select(p => p[..^"_sys.wav".Length])
+            .Concat(TrackFiles(outDir, "*_mic.wav").Select(p => p[..^"_mic.wav".Length]))
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+
+    /// <summary>&lt;out&gt;/[0-9]*/[0-9]*/*/&lt;pattern&gt; (the prototype's glob).</summary>
+    private static IEnumerable<string> TrackFiles(string outDir, string pattern)
     {
         if (!Directory.Exists(outDir))
             return [];
@@ -110,7 +116,7 @@ public static class Orphans
             return Directory.EnumerateDirectories(outDir).Where(Digit)
                 .SelectMany(y => Directory.EnumerateDirectories(y).Where(Digit))
                 .SelectMany(m => Directory.EnumerateDirectories(m))
-                .SelectMany(d => Directory.EnumerateFiles(d, "*_sys.wav"))
+                .SelectMany(d => Directory.EnumerateFiles(d, pattern))
                 .Order(StringComparer.Ordinal).ToList();
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)

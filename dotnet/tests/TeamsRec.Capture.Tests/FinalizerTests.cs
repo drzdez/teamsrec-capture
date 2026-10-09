@@ -153,6 +153,42 @@ public sealed class FinalizerTests : IDisposable
     }
 
     [Fact]
+    public void At_the_end_of_the_session_the_sidecar_is_written_at_once_without_mix_and_calendar_lookup()
+    {
+        // Windows logs off / shuts down mid-recording: the meeting's own metadata is kept, Outlook is not asked
+        var (stem, wav) = MicRecording("2026-09-25_0900_standup");
+        var started = new DateTime(2026, 9, 25, 9, 0, 0);
+        var byTime = new CalendarItem("Standup", started, started.AddMinutes(30), "Jana", ["Jana"], true, "time");
+        var asked = 0;
+        var fin = new Finalizer((_, _) => { asked++; return null; }, new FakeNotifier(),
+                                new FakeClock(new DateTime(2026, 9, 25, 9, 10, 0))) { FindFfmpeg = () => "ffmpeg.exe" };
+        var json = fin.Finalize(Stopped(stem, wav, 600, true, true, started), "session end",
+            Info("Standup", "live", titleSource: "calendar", cal: byTime,
+                 seen: new HashSet<string> { "Debrief | Microsoft Teams" }), quick: true);
+        var meta = ReadJson(json);
+        Assert.Equal("session_end", meta.GetProperty("stop_reason").GetString());
+        Assert.Equal("Standup", meta.GetProperty("title").GetString());
+        Assert.False(meta.TryGetProperty("mix", out _), "the mix is left to teamsrec-transcribe");
+        Assert.Equal(0, asked);
+        Assert.Equal(1, meta.GetProperty("participants").GetArrayLength());
+    }
+
+    [Fact]
+    public void Orphan_with_the_microphone_only_is_recovered_too()
+    {
+        // a call whose output never appeared, or an on-site meeting: no _sys.wav
+        var dir = Path.Combine(_tmp, "2026", "10", "2026-10-08_1032_postgresql-rollout");
+        Directory.CreateDirectory(dir);
+        var stem = Path.Combine(dir, "2026-10-08_1032_postgresql-rollout");
+        WriteWav(stem + "_mic.wav", 16000, 1, 16000 * 20, truncated: true);
+        Assert.Equal(1, Orphans.Recover(_tmp, () => null));
+        var meta = ReadJson(stem + ".json");
+        Assert.Equal(20, meta.GetProperty("duration_s").GetInt32());
+        Assert.True(meta.GetProperty("tracks").TryGetProperty("mic", out _));
+        Assert.False(meta.GetProperty("tracks").TryGetProperty("sys", out _));
+    }
+
+    [Fact]
     public void Rematch_keeps_a_calendar_already_matched_by_title()
     {
         var started = new DateTime(2026, 9, 25, 9, 0, 0);

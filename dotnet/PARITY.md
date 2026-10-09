@@ -61,7 +61,7 @@ the wrong thing on a real call.
 | Open folder / Quit | menu | `TrayApp.OpenFolder/Quit` | done | Quit stops with `app_quit` and waits up to 2 min for sidecars. The prototype's daemon finalize thread could be cut off. |
 | Single instance (shared mutex) | `_single_instance` `Local\teamsrec-capture` | `Program.cs` | done | Same name, so the prototype and the port exclude each other. The smoke run logged "already running". |
 | Logging | `logging.basicConfig` → `<out_dir>/teamsrec.log` | `App/FileLog.cs`, `Core.Log` | done | Same line format (`YYYY-MM-DD HH:MM:SS,mmm LEVEL msg`), shared-write open. |
-| Windows session end (logoff/shutdown) | — (none) | — (none) | missing (both) | Neither app stops the recording on logoff or shutdown; both rely on orphan recovery, which gap 2 breaks for .NET. |
+| Windows session end (logoff/shutdown) | — (none) | `TrayApp.OnSessionEnding`, `MonitorLoop.EndSession` | done (1.1.1) | The prototype relied on orphan recovery. .NET closes the WAV files and writes the sidecar at once (`stop_reason` `session_end`, no mix, no new calendar lookup) and asks Windows for the time (ShutdownBlockReasonCreate). |
 
 Tests: `legacy/smoke_test.py` has 18 tests. The .NET suite has 154 (App 24, Audio 10, Calendar 17,
 Config 11, Contract 15, Detection 11, Finalizer 7, Watchdog 6). None of the tests touches real

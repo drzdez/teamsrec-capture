@@ -175,6 +175,14 @@ tooltip. The mark goes when the window is back or the recording ends. While the 
 idle dot is yellow (tooltip: what runs, how many wait) and a notification says when each recording is done – a click
 opens it; the review window can be closed meanwhile.
 
+Devices during a call (1.1.1): with no output device when the call starts (a headset off), the microphone is
+recorded alone and the other side joins as soon as an output appears, its start padded with silence; the recording
+follows the output and the microphone the call really uses (Teams), also when the old device is still there; a device
+with another sample rate is converted to the file's in the writer thread instead of being refused. The sidecar lists
+the devices a track was recorded from (`devices`). When Windows logs off, restarts or shuts down during a recording,
+the files are closed and the sidecar written right away (`stop_reason` `session_end`; the mix is made by
+teamsrec-transcribe when it needs it).
+
 The Outlook filter date is asked in both day/month orders and only items starting on that day are kept: Outlook reads
 it by the regional settings, so `10/07/2026` was 10 July in Czech and no meeting was found on days 1–12 of a month
 (fixed 2026-10-07, both apps).

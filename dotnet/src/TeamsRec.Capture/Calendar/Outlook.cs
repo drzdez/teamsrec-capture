@@ -252,11 +252,18 @@ public static class Outlook
         }
     }
 
+    /// <summary>Only what Outlook's object model guard leaves alone: subject, times, location and the
+    /// participants' display names. The body, the organizer and any e-mail address (Recipient.Address, AddressEntry)
+    /// make Outlook ask "a program is trying to access e-mail address information" whenever it thinks the antivirus
+    /// is not current – 2026-10-09 right after logon, from the calendar offer that asks every 30 s. The Teams link is
+    /// recognised by the location Outlook gives Teams meetings ("Microsoft Teams Meeting", "Schůzka Microsoft Teams").</summary>
+    internal static bool IsTeamsLocation(string location) =>
+        location.Contains("teams", StringComparison.OrdinalIgnoreCase);
+
     private static CalendarItem? FromCom(object com)
     {
         dynamic it = com;
         string location = (string?)it.Location ?? "";
-        string body = (string?)it.Body ?? "";
         DateTime s = it.Start, e = it.End;
         var attendees = new List<string>();
         dynamic recips = it.Recipients;
@@ -285,9 +292,9 @@ public static class Outlook
             Subject: ((string?)it.Subject ?? "").Trim(),
             Start: new DateTime(s.Year, s.Month, s.Day, s.Hour, s.Minute, 0),  // minutes, like the prototype
             End: new DateTime(e.Year, e.Month, e.Day, e.Hour, e.Minute, 0),
-            Organizer: ((string?)it.Organizer ?? "").Trim(),
+            Organizer: "",  // guarded (see above): not read
             Attendees: attendees,
-            Teams: $"{location} {body}".Contains("teams.microsoft.com", StringComparison.OrdinalIgnoreCase));
+            Teams: IsTeamsLocation(location));
     }
 
     private static void Release(object? o)

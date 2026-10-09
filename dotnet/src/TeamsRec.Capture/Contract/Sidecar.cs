@@ -197,7 +197,7 @@ public sealed class SidecarCalendar
     public static SidecarCalendar From(CalendarItem cal, IEnumerable<CalendarItem>? candidates = null) => new()
     {
         Subject = cal.Subject,
-        Organizer = cal.Organizer,
+        Organizer = string.IsNullOrEmpty(cal.Organizer) ? null : cal.Organizer,  // not read from Outlook any more (Outlook.FromCom)
         Start = cal.Start,
         End = cal.End,
         Match = string.IsNullOrEmpty(cal.Match) ? "time" : cal.Match,

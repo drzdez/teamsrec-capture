@@ -61,3 +61,33 @@ public class WarningsTests
         Assert.True(AppLogic.Discreet(presenting: false, acceptsNotifications: false));  // full screen / cannot tell
     }
 }
+
+/// <summary>2026-10-09: Outlook asked "a program is trying to access e-mail address information" – the body and the
+/// organizer are guarded. Only subject, times, location and the participants' names are read now.</summary>
+public class OutlookGuardTests
+{
+    [Fact]
+    public void A_teams_meeting_is_recognised_by_the_location_outlook_gives_it()
+    {
+        Assert.True(Outlook.IsTeamsLocation("Microsoft Teams Meeting"));
+        Assert.True(Outlook.IsTeamsLocation("Schůzka Microsoft Teams"));
+        Assert.True(Outlook.IsTeamsLocation("Room 4; Microsoft Teams Meeting"));
+        Assert.False(Outlook.IsTeamsLocation(""));
+        Assert.False(Outlook.IsTeamsLocation("Zasedačka 2"));
+    }
+
+    /// <summary>Against the real Outlook of this PC, only with TEAMSREC_LIVE_OUTLOOK=1 (CI has none).</summary>
+    [Fact]
+    public void Live_outlook_gives_todays_meetings_with_names_and_no_organizer()
+    {
+        if (Environment.GetEnvironmentVariable("TEAMSREC_LIVE_OUTLOOK") != "1") return;
+        var day = DateTime.Parse(Environment.GetEnvironmentVariable("TEAMSREC_LIVE_DAY") ?? DateTime.Today.ToString("s"));
+        var items = Outlook.Items(day);
+        foreach (var it in items)
+            Console.WriteLine($"LIVE {it.Start:dd.MM HH:mm} {it.Subject} teams={it.Teams} attendees={it.Attendees.Count} organizer='{it.Organizer}'");
+        Assert.NotEmpty(items);
+        Assert.All(items, it => Assert.Equal(day.Date, it.Start.Date));
+        Assert.All(items, it => Assert.Equal("", it.Organizer));
+        Assert.Contains(items, it => it.Teams && it.Attendees.Count > 0);
+    }
+}
